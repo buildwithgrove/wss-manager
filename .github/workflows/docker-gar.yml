@@ -1,0 +1,172 @@
+name: Lint, Test and Push to Google Artifact Registry
+
+on:
+  push:
+    branches:
+      - master
+      - staging
+
+env:
+  PROJECT_ID: portal-gb-prod
+  REGISTRY: us-central1-docker.pkg.dev
+  IMAGE: wss-manager
+  REPOSITORY: wss-manager
+
+jobs:
+  pre-commit-checks:
+    name: Lint, Unit Test and Pre-commit Checks
+    runs-on: ubuntu-22.04
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Check for disabled pre-commit checks in .pre-commit-config.yaml
+      run: |
+        if grep '^[[:space:]]*#' .pre-commit-config.yaml; then
+          echo "Found commented lines in .pre-commit-config.yaml. Please remove them to proceed."
+          exit 1
+        fi
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: 1.22
+
+    - name: Cache Go and pre-commit data
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/go/pkg/mod
+          ~/.cache/pip
+          ~/pre-commit-2.20.0.pyz
+          $(go env GOPATH)/bin
+        key: ${{ runner.os }}-go-precommit-${{ hashFiles('**/go.sum', '.pre-commit-config.yaml', '**/requirements*.txt', 'pre-commit-2.20.0.pyz') }}
+        restore-keys: |
+          ${{ runner.os }}-go-precommit-
+
+    - name: Install Go tools
+      run: |
+        PATH="$(go env GOPATH)/bin:$PATH"
+        if ! command -v goimports &> /dev/null; then
+          go install golang.org/x/tools/cmd/goimports@v0.6.0
+        fi
+        if ! command -v golangci-lint &> /dev/null; then
+          go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.55.2
+        fi
+        if ! command -v gocritic &> /dev/null; then
+          go install github.com/go-critic/go-critic/cmd/gocritic@v0.6.5
+        fi
+      env:
+        PATH: $(go env GOPATH)/bin:$PATH
+
+    - name: Download pre-commit if not cached
+      run: |
+        if [ ! -f ~/pre-commit-2.20.0.pyz ]; then
+          echo "Downloading pre-commit..."
+          wget -P ~ https://github.com/pre-commit/pre-commit/releases/download/v2.20.0/pre-commit-2.20.0.pyz
+        else
+          echo "Using cached pre-commit."
+        fi
+
+    - name: Comment out 'no-commit-to-branch' in .pre-commit-config.yaml
+      run: |
+        sed -i 's/^\(\s*- id: no-commit-to-branch\)/# \1/' .pre-commit-config.yaml
+      working-directory: ${{ github.workspace }}
+
+    - name: Run pre-commit checks on all files
+      run: python3 ~/pre-commit-2.20.0.pyz run --all-files
+
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    needs: [pre-commit-checks]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: 1.22
+
+      - name: Set up cache
+        uses: actions/cache@v2
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run all tests
+        run: make test
+
+  tag:
+    name: Semantic Release Tag
+    runs-on: ubuntu-22.04
+    needs: [pre-commit-checks, test]
+    outputs:
+      new: ${{ steps.semantic.outputs.new_release_published }}
+      version: ${{ steps.semantic.outputs.new_release_version }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Tag Semantic Release Version
+        id: semantic
+        uses: cycjimmy/semantic-release-action@v4
+        with:
+          branches: |
+            [
+              'master',
+              {
+                name: 'dev',
+                prerelease: 'dev'
+              }
+            ]
+          extra_plugins: |
+            @semantic-release/commit-analyzer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  push:
+    if: needs.tag.outputs.new == 'true'
+    runs-on: ubuntu-latest
+    needs: [pre-commit-checks, test, tag]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - id: 'auth'
+        name: 'Authenticate to Google Cloud'
+        uses: 'google-github-actions/auth@v0.6.0'
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+          token_format: 'access_token'
+
+      - name: Login to Google Artifact Registry
+        uses: docker/login-action@v2
+        with:
+          registry: "${{ env.REGISTRY }}"
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v3
+        with:
+          build-args: |
+            IMAGE_TAG=${{ needs.tag.outputs.version }}
+            GITHUB_TOKEN=${{ secrets.GH_ACCESS_TOKEN }}
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:${{ needs.tag.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE }}:latest
