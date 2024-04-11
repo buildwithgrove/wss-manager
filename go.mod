@@ -10,6 +10,7 @@ replace github.com/cosmos/cosmos-sdk => github.com/rollkit/cosmos-sdk v0.47.3-ro
 replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 
 require (
+	github.com/google/uuid v1.3.0
 	github.com/gorilla/websocket v1.5.1
 	github.com/pokt-foundation/portal-http-db/v2 v2.4.1
 	github.com/pokt-foundation/portal-middleware v0.0.199
