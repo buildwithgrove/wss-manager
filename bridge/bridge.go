@@ -29,6 +29,7 @@ type (
 	wsConnection interface {
 		ReadMessage() (messageType int, p []byte, err error)
 		WriteMessage(messageType int, data []byte) error
+		Close() error
 	}
 )
 
@@ -56,10 +57,15 @@ func (b *Bridge) Run() {
 		for {
 			messageType, message, err := b.clientConn.ReadMessage()
 			if err != nil {
-				b.log.Error("Error reading from client websocket:", err)
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					b.log.Info("Client websocket closed")
+
+					// Close the gateway connection when client connection terminated
+					// TODO - figure out how to gracefully exit the gateway read loop to avoid error in read loop
+					b.gatewayConn.Close()
+					return
 				}
+				b.log.Error("Error reading from client websocket:", err)
 				return
 			}
 
