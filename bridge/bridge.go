@@ -13,19 +13,25 @@ type (
 		app   types.PortalAppID
 		chain types.ChainAlias
 
-		clientConn  wsConnection
-		gatewayConn wsConnection
+		clientConn  WSConnection
+		gatewayConn WSConnection
 
 		log *logger.Logger
 
 		// TODO - add subscription map for the bridge
 	}
 
+	IBridge interface {
+		Run()
+		Chain() types.ChainAlias
+		App() types.PortalAppID
+	}
+
 	Builder struct {
 		log *logger.Logger
 	}
 
-	wsConnection interface {
+	WSConnection interface {
 		ReadMessage() (messageType int, p []byte, err error)
 		WriteMessage(messageType int, data []byte) error
 	}
@@ -37,7 +43,7 @@ func NewBuilder(log *logger.Logger) *Builder {
 	}
 }
 
-func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection) *Bridge {
+func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn WSConnection) IBridge {
 	return &Bridge{
 		id:          uuid.New(),
 		app:         app,

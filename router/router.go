@@ -54,20 +54,32 @@ func Start(ctx context.Context, config Config) error {
 	return nil
 }
 
+// methodCheckMiddleware ensures that only GET requests are allowed for the wrapped handler
+func methodCheckMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed: only GET requests are allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // newAPIRouter creates a new APIRouter instance
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
-		mux:      http.NewServeMux(),
-		logger:   config.Logger,
-		imageTag: config.ImageTag,
-		bridge:   bridge.NewBuilder(config.Logger),
+		mux:           http.NewServeMux(),
+		bridge:        bridge.NewBuilder(config.Logger),
+		gatewayDomain: config.GatewayDomain,
+		imageTag:      config.ImageTag,
+		logger:        config.Logger,
 	}
 
 	// GET /healthz - handleHealthz returns a simple health check response
-	wr.mux.HandleFunc("GET /healthz", wr.handleHealthz)
+	wr.mux.HandleFunc("GET /healthz", methodCheckMiddleware(wr.handleHealthz))
 
 	// GET /v1/{app} - establishes a websocket connection to the WSS Manager
-	wr.mux.HandleFunc("GET /v1/{app}", wr.websocketHandler)
+	wr.mux.HandleFunc("GET /v1/{app}", methodCheckMiddleware(wr.websocketHandler))
 
 	return wr
 }
@@ -97,40 +109,45 @@ func (wr *wsRouter) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	app := types.PortalAppID(req.PathValue("app"))
 	if app == "" {
-		wr.logger.Error("error parsing app", slog.String("error", "Error parsing app"))
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), "Error parsing app")
+		errString := "app must be present"
+		wr.logger.Error(errString)
+		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
 		return
 	}
 
 	chainDomain := types.ChainDomain(req.Host)
 	chain := chainDomain.GetAlias()
 	if chain == "" {
-		wr.logger.Error("error parsing host", slog.String("error", "Error parsing host"))
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), "Error parsing host")
+		errString := "chain must be present"
+		wr.logger.Error(errString)
+		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
 		return
 	}
 
 	gatewayURL := wr.buildGatewayURL(chain)
 	gatewayWS, err := ws.Connect(gatewayURL)
 	if err != nil {
-		wr.logger.Error("error establishing connection to gateway", slog.String("error", err.Error()))
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), "Error establishing connection")
+		errString := fmt.Sprintf("error establishing connection to gateway: %s", err.Error())
+		wr.logger.Error(errString)
+		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
 		return
 	}
 
-	// Allow all origins here. user-security plugin has applied origin whitelisting
-	var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true }, // allow all origins
+	}
 	clientWS, err := upgrader.Upgrade(w, req, nil)
 	if err != nil {
-		wr.logger.Error("error upgrading connection", slog.String("error", err.Error()))
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), "Error processing request")
+		errString := fmt.Sprintf("error upgrading connection: %s", err.Error())
+		wr.logger.Error(errString)
+		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
 		return
 	}
 
 	wr.bridge.NewBridge(app, chain, clientWS, gatewayWS).Run()
 }
 
+// writeRequestProcessingError writes a request processing error response to the client in the JSON-RPC expected format
 func (wr *wsRouter) writeRequestProcessingError(w http.ResponseWriter, relayID relay.ID, message string) {
 	bytes, err := json.Marshal(relay.RelayResponse{
 		JSONRPC: "2.0",
@@ -145,8 +162,7 @@ func (wr *wsRouter) writeRequestProcessingError(w http.ResponseWriter, relayID r
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	// Portal V2 should not return 50x/40x errors: always 200, as per Json-RPC expected behavior
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusOK) // gateway should not return 50x/40x errors: always 200 as per JSON-RPC expected behavior
 
 	_, err = w.Write(bytes)
 	if err != nil {
