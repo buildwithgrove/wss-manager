@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -24,8 +25,8 @@ type (
 		app   types.PortalAppID
 		chain types.ChainAlias
 
-		clientConn  WSConnection
-		gatewayConn WSConnection
+		clientConn  wsConnection
+		gatewayConn wsConnection
 
 		log *logger.Logger
 
@@ -35,13 +36,16 @@ type (
 		// TODO - clear pending subs on interval?
 		pendingSubs   map[string]sub.PendingSubscribe
 		pendingUnsubs map[string]sub.PendingUnsubscribe
+		req           *http.Request
+
+		// TODO - add subscription map for the bridge
 	}
 
 	Builder struct {
 		log *logger.Logger
 	}
 
-	WSConnection interface {
+	wsConnection interface {
 		ReadMessage() (messageType int, p []byte, err error)
 		WriteMessage(messageType int, data []byte) error
 		Close() error
@@ -65,13 +69,14 @@ func NewBuilder(log *logger.Logger) *Builder {
 	}
 }
 
-func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn WSConnection) *Bridge {
+func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection, req *http.Request) *Bridge {
 	return &Bridge{
 		id:               uuid.New().String(),
 		app:              app,
 		chain:            chain,
 		clientConn:       clientConn,
 		gatewayConn:      gatewayConn,
+		req:              req,
 		log:              b.log,
 		pendingSubs:      make(map[string]sub.PendingSubscribe),
 		pendingUnsubs:    make(map[string]sub.PendingUnsubscribe),
