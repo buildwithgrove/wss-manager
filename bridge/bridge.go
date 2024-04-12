@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"net/http"
+
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
@@ -18,6 +20,8 @@ type (
 		gatewayConn wsConnection
 
 		log *logger.Logger
+
+		req http.Request
 
 		// TODO - add subscription map for the bridge
 	}
@@ -39,13 +43,14 @@ func NewBuilder(log *logger.Logger) *Builder {
 	}
 }
 
-func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection) *Bridge {
+func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection, req http.Request) *Bridge {
 	return &Bridge{
 		id:          uuid.New(),
 		app:         app,
 		chain:       chain,
 		clientConn:  clientConn,
 		gatewayConn: gatewayConn,
+		req:         req,
 		log:         b.log,
 	}
 }
