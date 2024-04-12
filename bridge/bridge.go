@@ -188,7 +188,7 @@ func (b *Bridge) processClientRequest(message []byte) ([]byte, error) {
 func (b *Bridge) handleSubscribeRequest(relay relayPkg.Relay, requestBody []byte) ([]byte, error) {
 	b.log.Info("Received eth_subscribe request from client")
 
-	// Generate a temporary relay ID for the pending subscription
+	// Generate a temporary relay ID for the pending subscribe request
 	tempRelayID := uuid.New().String()
 
 	// Store the pending subscription with the temporary relay ID
@@ -213,18 +213,32 @@ func (b *Bridge) handleSubscribeRequest(relay relayPkg.Relay, requestBody []byte
 func (b *Bridge) handleUnsubscribeRequest(relay relayPkg.Relay) ([]byte, error) {
 	b.log.Info("Received eth_unsubscribe request from client")
 
-	// Generate a temporary relay ID for the pending subscription
-	tempRelayID := uuid.New().String()
-
 	var params []string
 	if err := json.Unmarshal(relay.Params, &params); err != nil {
 		return nil, fmt.Errorf("error unmarshalling unsubscribe request: %w", err)
 	}
 
+	// Get current sub ID from subsByOriginalID map
+	subscription, ok := b.subsByOriginalID[subPkg.SubscriptionID(params[0])]
+	if !ok {
+		return nil, fmt.Errorf("subscription not found")
+	}
+
+	// Replace params slice with current sub ID
+	currentSubIDParams := []subPkg.SubscriptionID{subscription.CurrentSubID()}
+	paramsJSON, err := json.Marshal(currentSubIDParams)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling unsubscribe relay params: %w", err)
+	}
+	relay.Params = json.RawMessage(paramsJSON)
+
+	// Generate a temporary relay ID for the pending unsubscribe request
+	tempRelayID := uuid.New().String()
+
 	// Store the pending subscription with the temporary relay ID
 	b.pendingUnsubs[tempRelayID] = subPkg.PendingUnsubscribe{
 		OriginalRelayID: relay.ID,
-		OriginalSubID:   subPkg.SubscriptionID(params[0]),
+		OriginalSubID:   subscription.OriginalSubID(),
 	}
 
 	// Replace the original relay ID with the temporary one in the message
@@ -246,12 +260,12 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 		return nil, fmt.Errorf("error unmarshalling gateway response: %w", err)
 	}
 
-	// If the relay is a subscription event, ensure it contains the original subscription ID
+	// If the relay is a subscription event ensure it contains the original subscription ID
 	if params, ok := b.isSubscriptionEvent(relay); ok {
 		return b.handleSubscriptionEvent(params, relay)
 	}
 
-	// If the relay is a response to a subscription or unsubscription its ID is a UUID
+	// If a response to a subscribe or unsubscribe request the ID will be a temp UUID
 	if tempRelayID := relay.ID.String(); tempRelayID != "" {
 
 		// If response is a subscription confirmation save the subscription to the subscriptions map
@@ -265,7 +279,7 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 		}
 	}
 
-	// If neither return the unmodified message
+	// If none of the above return the unmodified message
 	return message, nil
 }
 
@@ -277,7 +291,7 @@ func (b *Bridge) handleSubscribeResponse(relay relayPkg.Relay, pendingSub subPkg
 	}
 
 	// Replace original relay ID before returning response to client
-	relay.ID = relayPkg.IDFromString(pendingSub.OriginalRelayID.String())
+	relay.ID = pendingSub.OriginalRelayID
 
 	msgWithOriginalID, err := json.Marshal(relay)
 	if err != nil {
@@ -293,12 +307,6 @@ func (b *Bridge) handleSubscribeResponse(relay relayPkg.Relay, pendingSub subPkg
 func (b *Bridge) handleUnsubscribeResponse(relay relayPkg.Relay, pendingUnsub subPkg.PendingUnsubscribe, tempRelayID string) ([]byte, error) {
 	b.log.Info("received eth_unsubscribe confirmation from gateway")
 
-	// Get current sub ID from subsByOriginalID map
-	subscription, ok := b.subsByOriginalID[pendingUnsub.OriginalSubID]
-	if !ok {
-		return nil, fmt.Errorf("subscription not found")
-	}
-
 	// If the unsubscribe was successful the result field will be 'true'
 	var unsubConfirmation bool
 	if err := json.Unmarshal(relay.Result, &unsubConfirmation); err != nil {
@@ -310,14 +318,6 @@ func (b *Bridge) handleUnsubscribeResponse(relay relayPkg.Relay, pendingUnsub su
 
 	// Replace original relay ID before returning response to client
 	relay.ID = pendingUnsub.OriginalRelayID
-
-	// Replace params slice with current sub ID
-	currentSubID := []subPkg.SubscriptionID{subscription.CurrentSubID()}
-	paramsJSON, err := json.Marshal(currentSubID)
-	if err != nil {
-		return nil, err
-	}
-	relay.Params = json.RawMessage(paramsJSON)
 
 	msgWithOriginalID, err := json.Marshal(relay)
 	if err != nil {
