@@ -72,6 +72,11 @@ func (m *mockWsConnection) WriteMessage(messageType int, data []byte) error {
 	return args.Error(0)
 }
 
+func (m *mockWsConnection) Close() error {
+	args := m.Called()
+	return args.Error(0)
+}
+
 func newMockWsConnection(t interface {
 	mock.TestingT
 	Cleanup(func())
