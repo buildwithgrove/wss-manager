@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/logger"
 )
@@ -56,6 +57,10 @@ func (b *Bridge) Run() {
 			messageType, message, err := b.clientConn.ReadMessage()
 			if err != nil {
 				b.log.Error("Error reading from client websocket:", err)
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					b.log.Info("Client websocket closed")
+				}
+				return
 			}
 
 			// TODO - intercept `eth_subscription` messages and set the custom ID on them
@@ -63,6 +68,7 @@ func (b *Bridge) Run() {
 			err = b.gatewayConn.WriteMessage(messageType, message)
 			if err != nil {
 				b.log.Error("Error writing to gateway websocket:", err)
+				return
 			}
 		}
 	}()
@@ -73,6 +79,11 @@ func (b *Bridge) Run() {
 			messageType, message, err := b.gatewayConn.ReadMessage()
 			if err != nil {
 				b.log.Error("Error reading from gateway websocket:", err)
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					// TODO - implement Gateway reconnection logic
+					b.log.Info("Gateway websocket closed")
+				}
+				return
 			}
 
 			// TODO - intercept `eth_subscription` message replies, match the ID from the send step and add to the subscriptions map for this bridge
@@ -80,6 +91,7 @@ func (b *Bridge) Run() {
 			err = b.clientConn.WriteMessage(messageType, message)
 			if err != nil {
 				b.log.Error("Error writing to client websocket:", err)
+				return
 			}
 		}
 	}()
