@@ -1,5 +1,7 @@
 package subscription
 
+import relayPkg "github.com/pokt-foundation/wss-manager/relay"
+
 type (
 	Subscription struct {
 		requestBody []byte
@@ -9,14 +11,12 @@ type (
 	}
 
 	PendingSubscribe struct {
-		// TODO - define ID type to avoid usage of interface{}
-		OriginalRelayID interface{}
+		OriginalRelayID relayPkg.ID
 		RequestBody     []byte
 	}
 
 	PendingUnsubscribe struct {
-		// TODO - define ID type to avoid usage of interface{}
-		OriginalRelayID interface{}
+		OriginalRelayID relayPkg.ID
 		OriginalSubID   SubscriptionID
 	}
 
