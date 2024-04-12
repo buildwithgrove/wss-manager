@@ -5,27 +5,35 @@
 *.so
 *.dylib
 
+vendor
 # Test binary, built with `go test -c`
 *.test
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
-bin/*
 # Dependency directories (remove the comment below to include it)
-vendor/
+# vendor/
 
+.env
+tmp
+tmp/*
+*/tmp/*
+.DS_Store
+.vscode
+.vscode/*
+
+# Go Binaries
+bin
+bin/*
+wss-manager
+
+# SSL Certs
+*.pem
+
+# Pre-Commit Install file
 pre-commit-2.20.0.pyz
 pre-commit-2.20.0.pyz.*
 
-# Environment Variables
-.env
-
-# Middleware Config
-config.json
-config.*.json
-
-# Local Dev Setup
-tmp/*
-db_dump.tar
-.air.toml
+# DB Dumps
+*.tar

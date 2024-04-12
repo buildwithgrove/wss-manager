@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/logger"
 )
@@ -14,14 +13,21 @@ type (
 		app   types.PortalAppID
 		chain types.ChainAlias
 
-		clientConn  *websocket.Conn
-		gatewayConn *websocket.Conn
+		clientConn  wsConnection
+		gatewayConn wsConnection
 
 		log *logger.Logger
+
+		// TODO - add subscription map for the bridge
 	}
 
 	Builder struct {
 		log *logger.Logger
+	}
+
+	wsConnection interface {
+		ReadMessage() (messageType int, p []byte, err error)
+		WriteMessage(messageType int, data []byte) error
 	}
 )
 
@@ -31,7 +37,7 @@ func NewBuilder(log *logger.Logger) *Builder {
 	}
 }
 
-func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn *websocket.Conn) *Bridge {
+func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection) *Bridge {
 	return &Bridge{
 		id:          uuid.New(),
 		app:         app,
@@ -52,6 +58,8 @@ func (b *Bridge) Run() {
 				b.log.Error("Error reading from client websocket:", err)
 			}
 
+			// TODO - intercept `eth_subscription` messages and set the custom ID on them
+
 			err = b.gatewayConn.WriteMessage(messageType, message)
 			if err != nil {
 				b.log.Error("Error writing to gateway websocket:", err)
@@ -66,6 +74,8 @@ func (b *Bridge) Run() {
 			if err != nil {
 				b.log.Error("Error reading from gateway websocket:", err)
 			}
+
+			// TODO - intercept `eth_subscription` message replies, match the ID from the send step and add to the subscriptions map for this bridge
 
 			err = b.clientConn.WriteMessage(messageType, message)
 			if err != nil {
