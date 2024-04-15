@@ -10,10 +10,9 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
-	ws "github.com/pokt-foundation/portal-middleware/net/websocket"
-	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-manager/bridge"
+	"github.com/pokt-foundation/wss-manager/relay"
 )
 
 type (
@@ -107,6 +106,7 @@ func (wr *wsRouter) handleHealthz(w http.ResponseWriter, r *http.Request) {
 
 // GET /v1/{app} - handles requests sent to the WSS Manager
 func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
+	// parse the portal app from the request path to ensure it is present
 	app := types.PortalAppID(req.PathValue("app"))
 	if app == "" {
 		errString := "app must be present"
@@ -115,6 +115,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// parse the chain from the request host to ensure it is present
 	chainDomain := types.ChainDomain(req.Host)
 	chain := chainDomain.GetAlias()
 	if chain == "" {
@@ -124,15 +125,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	gatewayURL := wr.buildGatewayURL(chain)
-	gatewayWS, err := ws.Connect(gatewayURL)
-	if err != nil {
-		errString := fmt.Sprintf("error establishing connection to gateway: %s", err.Error())
-		wr.logger.Error(errString)
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
-		return
-	}
-
+	// upgrade the client connection to a websocket connection
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true }, // allow all origins
 	}
@@ -144,7 +137,20 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	wr.bridge.NewBridge(app, chain, clientWS, gatewayWS, req).Run()
+	// build the gateway URL
+	gatewayURL := wr.buildGatewayURL(chain)
+
+	// create a new bridge, which includes creating a new gateway connection
+	bridge, err := wr.bridge.NewBridge(app, chain, clientWS, gatewayURL, req)
+	if err != nil {
+		errString := fmt.Sprintf("error creating bridge: %s", err.Error())
+		wr.logger.Error(errString)
+		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
+		return
+	}
+
+	// run the bridge between client websocket and gateway websocket
+	go bridge.Run()
 }
 
 // writeRequestProcessingError writes a request processing error response to the client in the JSON-RPC expected format
@@ -171,5 +177,9 @@ func (wr *wsRouter) writeRequestProcessingError(w http.ResponseWriter, relayID r
 }
 
 func (wr *wsRouter) buildGatewayURL(chain types.ChainAlias) string {
-	return fmt.Sprintf("wss://%s.%s", chain, wr.gatewayDomain)
+
+	// TEMP - fix
+	return "ws://eth-mainnet.localhost:3000/ws/ea7f9165/eth-mainnet"
+
+	// return fmt.Sprintf("wss://%s.%s", chain, wr.gatewayDomain)
 }

@@ -1,10 +1,13 @@
 package bridge
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -28,6 +31,7 @@ type (
 
 		clientConn  wsConnection
 		gatewayConn wsConnection
+		gatewayURL  string
 
 		log *logger.Logger
 
@@ -59,20 +63,29 @@ func NewBuilder(log *logger.Logger) *Builder {
 	}
 }
 
-func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection, req *http.Request) *Bridge {
-	return &Bridge{
+func (bb *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn wsConnection, gatewayURL string, req *http.Request) (*Bridge, error) {
+	bridge := &Bridge{
 		id:               uuid.New().String(),
 		app:              app,
 		chain:            chain,
 		clientConn:       clientConn,
-		gatewayConn:      gatewayConn,
+		gatewayURL:       gatewayURL,
 		req:              req,
-		log:              b.log,
+		log:              bb.log,
 		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
 		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
 		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 	}
+
+	gatewayWS, err := bridge.connectGateway()
+	if err != nil {
+		return nil, fmt.Errorf("error establishing connection to gateway: %s", err.Error())
+	}
+
+	bridge.gatewayConn = gatewayWS
+
+	return bridge, nil
 }
 
 // Run starts the bridge and establishes a bidirectional communication between the client and server
@@ -115,10 +128,18 @@ func (b *Bridge) Run() {
 		for {
 			messageType, message, err := b.gatewayConn.ReadMessage()
 			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					// TODO - implement Gateway reconnection logic
-					b.log.Info("gateway websocket closed")
-					return
+				// , websocket.CloseAbnormalClosure
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+
+					// if the gateway connection is closed unexpectedly, attempt to reconnect
+					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect...")
+					if reconnectErr := b.reconnectToGateway(); reconnectErr != nil {
+						b.log.Error("failed to reconnect to gateway, stopping bridge operation", slog.String("error", reconnectErr.Error()))
+						return
+					}
+
+					// resume loop if reconnection was successful
+					continue
 				}
 
 				b.log.Error("error reading from gateway websocket:", slog.String("error", err.Error()))
@@ -360,4 +381,73 @@ func (b *Bridge) handleSubscriptionEvent(params relayPkg.SubscriptionEventParams
 	}
 
 	return json, nil
+}
+
+/* Reconnection Logic */
+
+func (b *Bridge) connectGateway() (*websocket.Conn, error) {
+	u, err := url.Parse(b.gatewayURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var h http.Header
+	username := u.User.Username()
+	password, _ := u.User.Password()
+
+	if username != "" && password != "" {
+		encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+		// encoded := username + ":" + password
+		h = http.Header{
+			"Authorization": []string{"Basic " + encoded},
+		}
+	}
+
+	// Remove authentication information from URL
+	u.User = nil
+
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), h)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
+
+// Reconnects to the gateway in case of connection drop with incremental backoff.
+func (b *Bridge) reconnectToGateway() error {
+	// TODO - configure in env vars
+	maxAttempts := 5
+	backoffInterval := 1 * time.Second // Initial backoff interval
+	const backoffFactor = 2            // Factor by which the interval increases
+	const maxBackoff = 1 * time.Minute // Maximum backoff interval
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		b.log.Info("attempting to reconnect to gateway", slog.Int("attempt", attempt))
+		gatewayWS, err := b.connectGateway()
+		if err != nil {
+			b.log.Error("failed to reconnect to gateway", slog.String("error", err.Error()), slog.Int("attempt", attempt))
+
+			if attempt == maxAttempts {
+				b.log.Error("max reconnect attempts reached", slog.Int("maxAttempts", maxAttempts))
+				return err
+			}
+
+			b.log.Info("retrying to connect after backoff interval")
+			time.Sleep(backoffInterval)
+
+			// Increase the backoff interval for the next attempt
+			backoffInterval *= backoffFactor
+			if backoffInterval > maxBackoff {
+				backoffInterval = maxBackoff
+			}
+
+			continue
+		}
+
+		b.gatewayConn = gatewayWS
+		b.log.Info("Successfully reconnected to gateway")
+		return nil
+	}
+
+	return fmt.Errorf("failed to reconnect to gateway after %d attempts", maxAttempts)
 }

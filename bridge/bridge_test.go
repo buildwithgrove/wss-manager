@@ -5,15 +5,35 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/logger"
+	subPkg "github.com/pokt-foundation/wss-manager/subscription"
 	mock "github.com/stretchr/testify/mock"
 )
+
+func NewTestBridge(app types.PortalAppID, chain types.ChainAlias, clientConn wsConnection, gatewayConn wsConnection, req *http.Request, log *logger.Logger) *Bridge {
+	return &Bridge{
+		id:               uuid.New().String(),
+		app:              app,
+		chain:            chain,
+		clientConn:       clientConn,
+		gatewayConn:      gatewayConn,
+		req:              req,
+		log:              log,
+		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
+		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
+		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
+		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
+	}
+}
 
 func Test_Bridge_Run(t *testing.T) {
 	tests := []struct {
 		name           string
 		clientPayload  []byte
 		gatewayPayload []byte
+		err            error
 	}{
 		{
 			name:           "should forward message from client to gateway and receive response",
@@ -35,7 +55,7 @@ func Test_Bridge_Run(t *testing.T) {
 			gatewayConn.On("ReadMessage").Return(1, test.gatewayPayload, nil)
 			clientConn.On("WriteMessage", 1, test.gatewayPayload).Return(nil)
 
-			bridge := NewBuilder(logger).NewBridge("appID", "chainAlias", clientConn, gatewayConn, &http.Request{})
+			bridge := NewTestBridge("appID", "chainAlias", clientConn, gatewayConn, &http.Request{}, logger)
 
 			// Start the bridge
 			go bridge.Run()
