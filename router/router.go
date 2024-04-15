@@ -107,8 +107,8 @@ func (wr *wsRouter) handleHealthz(w http.ResponseWriter, r *http.Request) {
 // GET /v1/{app} - handles requests sent to the WSS Manager
 func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	// parse the portal app from the request path to ensure it is present
-	app := types.PortalAppID(req.PathValue("app"))
-	if app == "" {
+	appID := types.PortalAppID(req.PathValue("app"))
+	if appID == "" {
 		errString := "app must be present"
 		wr.logger.Error(errString)
 		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
@@ -138,10 +138,10 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// build the gateway URL
-	gatewayURL := wr.buildGatewayURL(chain)
+	gatewayURL := fmt.Sprintf("ws://%s.%s/v1/%s", chain, wr.gatewayDomain, appID)
 
 	// create a new bridge, which includes creating a new gateway connection
-	bridge, err := wr.bridge.NewBridge(app, chain, clientWS, gatewayURL, req)
+	bridge, err := wr.bridge.NewBridge(appID, chain, clientWS, gatewayURL, req)
 	if err != nil {
 		errString := fmt.Sprintf("error creating bridge: %s", err.Error())
 		wr.logger.Error(errString)
@@ -174,12 +174,4 @@ func (wr *wsRouter) writeRequestProcessingError(w http.ResponseWriter, relayID r
 	if err != nil {
 		wr.logger.Error("error writing request processing error response", slog.String("error", err.Error()))
 	}
-}
-
-func (wr *wsRouter) buildGatewayURL(chain types.ChainAlias) string {
-
-	// TEMP - fix
-	return "ws://eth-mainnet.localhost:3000/ws/ea7f9165/eth-mainnet"
-
-	// return fmt.Sprintf("wss://%s.%s", chain, wr.gatewayDomain)
 }

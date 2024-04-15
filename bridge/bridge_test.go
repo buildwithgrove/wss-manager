@@ -1,7 +1,6 @@
 package bridge
 
 import (
-	"net/http"
 	"testing"
 	"time"
 
@@ -12,14 +11,13 @@ import (
 	mock "github.com/stretchr/testify/mock"
 )
 
-func NewTestBridge(app types.PortalAppID, chain types.ChainAlias, clientConn wsConnection, gatewayConn wsConnection, req *http.Request, log *logger.Logger) *Bridge {
+func NewTestBridge(app types.PortalAppID, chain types.ChainAlias, clientConn wsConnection, gatewayConn wsConnection, log *logger.Logger) *Bridge {
 	return &Bridge{
 		id:               uuid.New().String(),
 		app:              app,
 		chain:            chain,
 		clientConn:       clientConn,
 		gatewayConn:      gatewayConn,
-		req:              req,
 		log:              log,
 		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
 		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
@@ -55,7 +53,7 @@ func Test_Bridge_Run(t *testing.T) {
 			gatewayConn.On("ReadMessage").Return(1, test.gatewayPayload, nil)
 			clientConn.On("WriteMessage", 1, test.gatewayPayload).Return(nil)
 
-			bridge := NewTestBridge("appID", "chainAlias", clientConn, gatewayConn, &http.Request{}, logger)
+			bridge := NewTestBridge("appID", "chainAlias", clientConn, gatewayConn, logger)
 
 			// Start the bridge
 			go bridge.Run()
