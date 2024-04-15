@@ -1,13 +1,9 @@
 package bridge
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"net/url"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -29,11 +25,11 @@ type (
 		app   types.PortalAppID
 		chain types.ChainAlias
 
-		clientConn  wsConnection
-		gatewayConn wsConnection
-		gatewayURL  string
-
-		req *http.Request
+		clientConn     wsConnection
+		gatewayConn    wsConnection
+		gatewayURL     string
+		gatewayMsgChan chan gatewayMessage
+		doneChan       chan struct{}
 
 		log *logger.Logger
 
@@ -54,6 +50,12 @@ type (
 		WriteMessage(messageType int, data []byte) error
 		Close() error
 	}
+
+	gatewayMessage struct {
+		message     []byte
+		messageType int
+		err         error
+	}
 )
 
 func NewBuilder(log *logger.Logger) *Builder {
@@ -62,19 +64,20 @@ func NewBuilder(log *logger.Logger) *Builder {
 	}
 }
 
-func (bb *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn wsConnection, gatewayURL string, req *http.Request) (*Bridge, error) {
+func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn wsConnection, gatewayURL string) (*Bridge, error) {
 	bridge := &Bridge{
 		id:               uuid.New().String(),
 		app:              app,
 		chain:            chain,
 		clientConn:       clientConn,
 		gatewayURL:       gatewayURL,
-		req:              req,
-		log:              bb.log,
+		gatewayMsgChan:   make(chan gatewayMessage, 100_000),
+		doneChan:         make(chan struct{}),
 		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
 		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
 		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
+		log:              b.log,
 	}
 
 	gatewayWS, err := bridge.connectGateway()
@@ -97,9 +100,11 @@ func (b *Bridge) Run() {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					b.log.Info("client websocket closed")
 
-					// Close the gateway connection when client connection closed
-					// TODO - figure out how to gracefully stop the gateway read loop on closing the connection.
+					// Close the gateway connection if client connection closed
+					close(b.doneChan)
+					close(b.gatewayMsgChan)
 					b.gatewayConn.Close()
+
 					return
 				}
 
@@ -122,40 +127,62 @@ func (b *Bridge) Run() {
 		}
 	}()
 
-	// Start goroutine to read from gateway and write to client
+	// Start goroutine to read from gateway and send to gatewayMsgChan
 	go func() {
 		for {
 			messageType, message, err := b.gatewayConn.ReadMessage()
 			if err != nil {
-				// , websocket.CloseAbnormalClosure
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
 
-					// if the gateway connection is closed unexpectedly, attempt to reconnect
+				// If the gateway connection is closed unexpectedly, attempt to reconnect
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
 					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect...")
+
 					if reconnectErr := b.reconnectToGateway(); reconnectErr != nil {
 						b.log.Error("failed to reconnect to gateway, stopping bridge operation", slog.String("error", reconnectErr.Error()))
 						return
 					}
 
-					// resume loop if reconnection was successful
+					continue // Resume loop if reconnection was successful
+				}
+
+				close(b.gatewayMsgChan) // Signal that no more messages will be sent
+				return
+			}
+			// Wrap messageType and message into a Message struct and send it to gatewayMsgChan
+			b.gatewayMsgChan <- gatewayMessage{message: message, messageType: messageType}
+		}
+	}()
+
+	// Start goroutine to read from gatewayMsgChan and write to client
+	go func() {
+		for {
+			select {
+			// If client connection closed, close the gateway connection
+			case <-b.doneChan:
+				b.log.Info("gateway websocket closed")
+				return
+
+			// Otherwise read from gatewayMsgChan and write to client
+			case msg := <-b.gatewayMsgChan:
+
+				messageType, message, err := msg.messageType, msg.message, msg.err
+				if err != nil {
+					b.log.Error("error reading from gateway websocket:", slog.String("error", err.Error()))
+					return
+				}
+
+				// Check if the message is a response to a pending subscribe or unsubscribe request
+				processedMsg, err := b.processGatewayResponse(message)
+				if err != nil {
+					b.log.Error("error processing gateway request:", slog.String("error", err.Error()))
 					continue
 				}
 
-				b.log.Error("error reading from gateway websocket:", slog.String("error", err.Error()))
-				return
-			}
-
-			// Check if the message is a response to a pending subscribe or unsubscribe request
-			processedMsg, err := b.processGatewayResponse(message)
-			if err != nil {
-				b.log.Error("error processing gateway request:", slog.String("error", err.Error()))
-				continue
-			}
-
-			err = b.clientConn.WriteMessage(messageType, processedMsg)
-			if err != nil {
-				b.log.Error("error writing to client websocket:", slog.String("error", err.Error()))
-				return
+				err = b.clientConn.WriteMessage(messageType, processedMsg)
+				if err != nil {
+					b.log.Error("error writing to client websocket:", slog.String("error", err.Error()))
+					return
+				}
 			}
 		}
 	}()
@@ -380,73 +407,4 @@ func (b *Bridge) handleSubscriptionEvent(params relayPkg.SubscriptionEventParams
 	}
 
 	return json, nil
-}
-
-/* Reconnection Logic */
-
-func (b *Bridge) connectGateway() (*websocket.Conn, error) {
-	u, err := url.Parse(b.gatewayURL)
-	if err != nil {
-		return nil, err
-	}
-
-	var h http.Header
-	username := u.User.Username()
-	password, _ := u.User.Password()
-
-	if username != "" && password != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-		// encoded := username + ":" + password
-		h = http.Header{
-			"Authorization": []string{"Basic " + encoded},
-		}
-	}
-
-	// Remove authentication information from URL
-	u.User = nil
-
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), h)
-	if err != nil {
-		return nil, err
-	}
-	return conn, nil
-}
-
-// Reconnects to the gateway in case of connection drop with incremental backoff.
-func (b *Bridge) reconnectToGateway() error {
-	// TODO - configure in env vars
-	maxAttempts := 5
-	backoffInterval := 1 * time.Second // Initial backoff interval
-	const backoffFactor = 2            // Factor by which the interval increases
-	const maxBackoff = 1 * time.Minute // Maximum backoff interval
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		b.log.Info("attempting to reconnect to gateway", slog.Int("attempt", attempt))
-		gatewayWS, err := b.connectGateway()
-		if err != nil {
-			b.log.Error("failed to reconnect to gateway", slog.String("error", err.Error()), slog.Int("attempt", attempt))
-
-			if attempt == maxAttempts {
-				b.log.Error("max reconnect attempts reached", slog.Int("maxAttempts", maxAttempts))
-				return err
-			}
-
-			b.log.Info("retrying to connect after backoff interval")
-			time.Sleep(backoffInterval)
-
-			// Increase the backoff interval for the next attempt
-			backoffInterval *= backoffFactor
-			if backoffInterval > maxBackoff {
-				backoffInterval = maxBackoff
-			}
-
-			continue
-		}
-
-		b.gatewayConn = gatewayWS
-		b.log.Info("Successfully reconnected to gateway")
-		return nil
-	}
-
-	return fmt.Errorf("failed to reconnect to gateway after %d attempts", maxAttempts)
 }
