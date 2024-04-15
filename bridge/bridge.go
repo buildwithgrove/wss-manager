@@ -39,7 +39,7 @@ type (
 		// TODO - clear pending subs on interval?
 		pendingSubs   map[string]subPkg.PendingSubscribe
 		pendingUnsubs map[string]subPkg.PendingUnsubscribe
-		pendingResubs map[string]subPkg.PendingResubscribe
+		pendingResubs map[string]subPkg.SubscriptionID
 	}
 
 	Builder struct {
@@ -76,7 +76,7 @@ func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clien
 		doneChan:         make(chan struct{}),
 		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
 		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
-		pendingResubs:    make(map[string]subPkg.PendingResubscribe),
+		pendingResubs:    make(map[string]subPkg.SubscriptionID),
 		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		log:              b.log,
@@ -139,12 +139,12 @@ func (b *Bridge) Run() {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
 					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect")
 
-					if reconnectErr := b.reconnectToGateway(); reconnectErr != nil {
-						b.log.Error("failed to reconnect to gateway, stopping bridge operation", slog.String("error", reconnectErr.Error()))
-						return
+					if reconnectErr := b.reconnectToGateway(); reconnectErr == nil {
+						continue // Resume loop if reconnection was successful
 					}
 
-					continue // Resume loop if reconnection was successful
+					b.log.Error("failed to reconnect to gateway, stopping bridge operation")
+					return
 				}
 
 				return
@@ -405,10 +405,10 @@ func (b *Bridge) handleUnsubscribeResponse(relay relayPkg.Relay, pendingUnsub su
 	return msgWithOriginalID, nil
 }
 
-func (b *Bridge) handleResubscribeResponse(relay relayPkg.Relay, pendingResub subPkg.PendingResubscribe, tempRelayID string) error {
+func (b *Bridge) handleResubscribeResponse(relay relayPkg.Relay, originalSubID subPkg.SubscriptionID, tempRelayID string) error {
 	b.log.Info("received eth_subscribe resubscribe confirmation from gateway")
 
-	err := b.updateSubscription(relay, pendingResub.OriginalSubID)
+	err := b.updateSubscription(relay, originalSubID)
 	if err != nil {
 		return fmt.Errorf("error handling resubscribe response: %w", err)
 	}

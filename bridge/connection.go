@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	relayPkg "github.com/pokt-foundation/wss-manager/relay"
-	subPkg "github.com/pokt-foundation/wss-manager/subscription"
 )
 
 // connectGateway connects to the gateway and returns the websocket connection.
@@ -90,13 +89,11 @@ func (b *Bridge) reconnectToGateway() error {
 
 func (b *Bridge) resumeSubscriptions() {
 	for _, sub := range b.subsByCurrentID {
-		// Generate a temporary relay ID for the pending subscribe request
+		// Generate a temporary relay ID for the pending resubscribe request
 		tempRelayID := uuid.New().String()
 
-		// Store the pending subscription with the temporary relay ID
-		b.pendingResubs[tempRelayID] = subPkg.PendingResubscribe{
-			OriginalSubID: sub.OriginalSubID(),
-		}
+		// Store the original subscription ID with the temporary relay ID
+		b.pendingResubs[tempRelayID] = sub.OriginalSubID()
 
 		var relay relayPkg.Relay
 		if err := json.Unmarshal(sub.RequestBody(), &relay); err != nil {
