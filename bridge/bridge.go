@@ -33,6 +33,8 @@ type (
 		gatewayConn wsConnection
 		gatewayURL  string
 
+		req *http.Request
+
 		log *logger.Logger
 
 		subsByCurrentID  map[subPkg.SubscriptionID]*subPkg.Subscription
@@ -41,9 +43,6 @@ type (
 		// TODO - clear pending subs on interval?
 		pendingSubs   map[string]subPkg.PendingSubscribe
 		pendingUnsubs map[string]subPkg.PendingUnsubscribe
-		req           *http.Request
-
-		// TODO - add subscription map for the bridge
 	}
 
 	Builder struct {
