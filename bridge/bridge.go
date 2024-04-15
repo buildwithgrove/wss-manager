@@ -39,6 +39,7 @@ type (
 		// TODO - clear pending subs on interval?
 		pendingSubs   map[string]subPkg.PendingSubscribe
 		pendingUnsubs map[string]subPkg.PendingUnsubscribe
+		pendingResubs map[string]subPkg.PendingResubscribe
 	}
 
 	Builder struct {
@@ -75,6 +76,7 @@ func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clien
 		doneChan:         make(chan struct{}),
 		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
 		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
+		pendingResubs:    make(map[string]subPkg.PendingResubscribe),
 		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		log:              b.log,
@@ -135,7 +137,7 @@ func (b *Bridge) Run() {
 
 				// If the gateway connection is closed unexpectedly, attempt to reconnect
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
-					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect...")
+					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect")
 
 					if reconnectErr := b.reconnectToGateway(); reconnectErr != nil {
 						b.log.Error("failed to reconnect to gateway, stopping bridge operation", slog.String("error", reconnectErr.Error()))
@@ -145,7 +147,6 @@ func (b *Bridge) Run() {
 					continue // Resume loop if reconnection was successful
 				}
 
-				close(b.gatewayMsgChan) // Signal that no more messages will be sent
 				return
 			}
 			// Wrap messageType and message into a Message struct and send it to gatewayMsgChan
@@ -175,6 +176,10 @@ func (b *Bridge) Run() {
 				processedMsg, err := b.processGatewayResponse(message)
 				if err != nil {
 					b.log.Error("error processing gateway request:", slog.String("error", err.Error()))
+					continue
+				}
+
+				if processedMsg == nil {
 					continue
 				}
 
@@ -210,6 +215,21 @@ func (b *Bridge) removeSubscription(originalSubID subPkg.SubscriptionID) {
 	}
 
 	delete(b.subsByOriginalID, originalSubID)
+}
+
+func (b *Bridge) updateSubscription(relay relayPkg.Relay, originalSubID subPkg.SubscriptionID) error {
+	var newSubID subPkg.SubscriptionID
+	if err := json.Unmarshal(relay.Result, &newSubID); err != nil {
+		return fmt.Errorf("error unmarshalling subscription ID: %w", err)
+	}
+
+	if subscription, ok := b.subsByOriginalID[originalSubID]; ok {
+		subscription.SetCurrentSubID(newSubID)
+		b.subsByCurrentID[newSubID] = subscription
+		delete(b.subsByCurrentID, originalSubID)
+	}
+
+	return nil
 }
 
 // processClientRequest checks if a client request is either an 'eth_subscribe' or 'eth_unsubscribe' method.
@@ -324,6 +344,14 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 		if pendingUnsub, ok := b.pendingUnsubs[tempRelayID]; ok {
 			return b.handleUnsubscribeResponse(relay, pendingUnsub, tempRelayID)
 		}
+
+		// If response is a resubscribe confirmation update the current sub ID
+		if pendingResub, ok := b.pendingResubs[tempRelayID]; ok {
+			err := b.handleResubscribeResponse(relay, pendingResub, tempRelayID)
+			if err != nil {
+				return nil, fmt.Errorf("error handling resubscribe response: %w", err)
+			}
+		}
 	}
 
 	// If none of the above return the unmodified message
@@ -375,6 +403,20 @@ func (b *Bridge) handleUnsubscribeResponse(relay relayPkg.Relay, pendingUnsub su
 	delete(b.pendingUnsubs, tempRelayID)
 
 	return msgWithOriginalID, nil
+}
+
+func (b *Bridge) handleResubscribeResponse(relay relayPkg.Relay, pendingResub subPkg.PendingResubscribe, tempRelayID string) error {
+	b.log.Info("received eth_subscribe resubscribe confirmation from gateway")
+
+	err := b.updateSubscription(relay, pendingResub.OriginalSubID)
+	if err != nil {
+		return fmt.Errorf("error handling resubscribe response: %w", err)
+	}
+
+	// Clear pending sub from map
+	delete(b.pendingResubs, tempRelayID)
+
+	return nil
 }
 
 func (b *Bridge) isSubscriptionEvent(relay relayPkg.Relay) (relayPkg.SubscriptionEventParams, bool) {

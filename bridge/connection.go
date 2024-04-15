@@ -2,13 +2,17 @@ package bridge
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	relayPkg "github.com/pokt-foundation/wss-manager/relay"
+	subPkg "github.com/pokt-foundation/wss-manager/subscription"
 )
 
 // connectGateway connects to the gateway and returns the websocket connection.
@@ -74,8 +78,47 @@ func (b *Bridge) reconnectToGateway() error {
 
 		b.gatewayConn = gatewayWS
 		b.log.Info("Successfully reconnected to gateway")
+
+		b.log.Info("resuming subscriptions")
+		b.resumeSubscriptions()
+
 		return nil
 	}
 
 	return fmt.Errorf("failed to reconnect to gateway after %d attempts", maxAttempts)
+}
+
+func (b *Bridge) resumeSubscriptions() {
+	for _, sub := range b.subsByCurrentID {
+		// Generate a temporary relay ID for the pending subscribe request
+		tempRelayID := uuid.New().String()
+
+		// Store the pending subscription with the temporary relay ID
+		b.pendingResubs[tempRelayID] = subPkg.PendingResubscribe{
+			OriginalSubID: sub.OriginalSubID(),
+		}
+
+		var relay relayPkg.Relay
+		if err := json.Unmarshal(sub.RequestBody(), &relay); err != nil {
+			b.log.Error("error unmarshalling client request:", slog.String("error", err.Error()))
+			continue
+		}
+
+		relay.ID = relayPkg.IDFromString(tempRelayID)
+
+		// Marshal the modified relay message
+		modifiedMessage, err := json.Marshal(relay)
+		if err != nil {
+			b.log.Error("error marshalling subscribe relay:", slog.String("error", err.Error()))
+			continue
+		}
+
+		err = b.gatewayConn.WriteMessage(websocket.TextMessage, modifiedMessage)
+		if err != nil {
+			b.log.Error("failed to resume subscription", slog.String("error", err.Error()))
+			continue
+		}
+
+		b.log.Info("resumed subscription", slog.String("subscription", string(sub.OriginalSubID())))
+	}
 }

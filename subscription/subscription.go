@@ -20,6 +20,10 @@ type (
 		OriginalSubID   SubscriptionID
 	}
 
+	PendingResubscribe struct {
+		OriginalSubID SubscriptionID
+	}
+
 	SubscriptionID string
 )
 
