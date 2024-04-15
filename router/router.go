@@ -144,7 +144,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	wr.bridge.NewBridge(app, chain, clientWS, gatewayWS).Run()
+	wr.bridge.NewBridge(app, chain, clientWS, gatewayWS, req).Run()
 }
 
 // writeRequestProcessingError writes a request processing error response to the client in the JSON-RPC expected format

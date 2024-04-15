@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"net/http"
+
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
@@ -14,21 +16,22 @@ type (
 		app   types.PortalAppID
 		chain types.ChainAlias
 
-		clientConn  WSConnection
-		gatewayConn WSConnection
+		clientConn  wsConnection
+		gatewayConn wsConnection
 
 		log *logger.Logger
 
-		// TODO - add subscription map for the bridge
+		req *http.Request
 	}
 
 	Builder struct {
 		log *logger.Logger
 	}
 
-	WSConnection interface {
+	wsConnection interface {
 		ReadMessage() (messageType int, p []byte, err error)
 		WriteMessage(messageType int, data []byte) error
+		Close() error
 	}
 )
 
@@ -38,13 +41,14 @@ func NewBuilder(log *logger.Logger) *Builder {
 	}
 }
 
-func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn WSConnection) *Bridge {
+func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection, req *http.Request) *Bridge {
 	return &Bridge{
 		id:          uuid.New(),
 		app:         app,
 		chain:       chain,
 		clientConn:  clientConn,
 		gatewayConn: gatewayConn,
+		req:         req,
 		log:         b.log,
 	}
 }
@@ -56,10 +60,15 @@ func (b *Bridge) Run() {
 		for {
 			messageType, message, err := b.clientConn.ReadMessage()
 			if err != nil {
-				b.log.Error("Error reading from client websocket:", err)
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					b.log.Info("Client websocket closed")
+
+					// Close the gateway connection when client connection terminated
+					// TODO - figure out how to gracefully exit the gateway read loop to avoid error in read loop
+					b.gatewayConn.Close()
+					return
 				}
+				b.log.Error("Error reading from client websocket:", err)
 				return
 			}
 
@@ -79,10 +88,13 @@ func (b *Bridge) Run() {
 			messageType, message, err := b.gatewayConn.ReadMessage()
 			if err != nil {
 				b.log.Error("Error reading from gateway websocket:", err)
+
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					// TODO - implement Gateway reconnection logic
 					b.log.Info("Gateway websocket closed")
+					return
 				}
+
 				return
 			}
 
@@ -95,12 +107,4 @@ func (b *Bridge) Run() {
 			}
 		}
 	}()
-}
-
-func (b *Bridge) Chain() types.ChainAlias {
-	return b.chain
-}
-
-func (b *Bridge) App() types.PortalAppID {
-	return b.app
 }
