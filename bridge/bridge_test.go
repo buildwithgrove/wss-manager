@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/utils-go/logger"
+	relayPkg "github.com/pokt-foundation/wss-manager/relay"
 	subPkg "github.com/pokt-foundation/wss-manager/subscription"
 	"github.com/stretchr/testify/require"
 )
@@ -49,19 +52,36 @@ func newTestBridge(clientConn, gatewayConn wsConnection, gatewayURL string, log 
 
 func Test_Bridge_Run(t *testing.T) {
 	tests := []struct {
-		name       string
-		wsReqs     map[clientReq]gatewayResp
-		clientErr  error
-		gatewayErr error
+		name                     string
+		wsReqs                   map[clientReq]gatewayResp
+		expectedSubsByCurrentID  map[subPkg.SubscriptionID]*subPkg.Subscription
+		expectedSubsByOriginalID map[subPkg.SubscriptionID]*subPkg.Subscription
 	}{
 		{
 			name: "should forward message from client to gateway and receive response",
 			wsReqs: map[clientReq]gatewayResp{
-				`{"jsonrpc": "2.0", "id": 1, "method": "eth_gasPrice"}`:    `{"jsonrpc":"2.0", "id":1, "result": "0x337d04a3b"}`,
-				`{"jsonrpc": "2.0", "id": 1, "method": "eth_blockNumber"}`: `{"jsonrpc":"2.0", "id":1, "result": "0x12c1b21"}`,
+				`{"jsonrpc":"2.0","id":1,"method":"eth_gasPrice"}`:    `{"jsonrpc":"2.0","id":1,"result":"0x337d04a3b"}`,
+				`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`: `{"jsonrpc":"2.0","id":1,"result":"0x12c1b21"}`,
 			},
 		},
-		// TODO - add test cases for intercepting `eth_subscription` message replies, matching the ID from the send step and adding to the subscriptions map for this bridge
+		{
+			name: "should add new subscription to bridge maps for an eth_subscribe request",
+			wsReqs: map[clientReq]gatewayResp{
+				`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`: `{"jsonrpc":"2.0","id":1,"result":"0x62013741778a9ba131fec673e84f0916"}`,
+			},
+			expectedSubsByCurrentID: map[subPkg.SubscriptionID]*subPkg.Subscription{
+				"0x62013741778a9ba131fec673e84f0916": subPkg.NewSubscription(
+					"0x62013741778a9ba131fec673e84f0916",
+					[]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`),
+				),
+			},
+			expectedSubsByOriginalID: map[subPkg.SubscriptionID]*subPkg.Subscription{
+				"0x62013741778a9ba131fec673e84f0916": subPkg.NewSubscription(
+					"0x62013741778a9ba131fec673e84f0916",
+					[]byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`),
+				),
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -83,19 +103,26 @@ func Test_Bridge_Run(t *testing.T) {
 			clientConn.sendWSRequests(t, test.wsReqs)
 
 			// Wait for a short duration to allow goroutines to run
-			<-time.After(50 * time.Millisecond)
+			<-time.After(500 * time.Millisecond)
 
 			// Assert that the client sent the expected requests and the gateway received the expected responses
 			capturedMessages.Lock()
-			for key := range test.wsReqs {
-				_, exists := capturedMessages.clientRequests[key]
-				c.True(exists, "Gateway did not receive expected request: %s", key)
+			for clientReq := range test.wsReqs {
+				_, exists := capturedMessages.clientRequests[clientReq]
+				c.True(exists, "Gateway did not receive expected request: %s", clientReq)
 			}
-			for _, value := range test.wsReqs {
-				_, exists := capturedMessages.gatewayResponses[value]
-				c.True(exists, "Client did not receive expected response: %s", value)
+			for _, gatewayResp := range test.wsReqs {
+				_, exists := capturedMessages.gatewayResponses[gatewayResp]
+				c.True(exists, "Client did not receive expected response: %s", gatewayResp)
 			}
 			capturedMessages.Unlock()
+
+			if test.expectedSubsByCurrentID != nil {
+				c.Equal(test.expectedSubsByCurrentID, bridge.subsByCurrentID)
+			}
+			if test.expectedSubsByOriginalID != nil {
+				c.Equal(test.expectedSubsByOriginalID, bridge.subsByOriginalID)
+			}
 		})
 	}
 }
@@ -124,6 +151,15 @@ func testClientWSConn(t *testing.T, wsReqs map[clientReq]gatewayResp) testWSConn
 					t.Error("Error reading response:", err)
 					return
 				}
+
+				// Match the behaviour of temp Relay ID when handling subscription request
+				var relay relayPkg.Relay
+				err = json.Unmarshal(message, &relay)
+				if err != nil {
+					t.Error("Error unmarshalling message:", err)
+					return
+				}
+				message = []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"result":%s}`, relay.Result))
 
 				capturedMessages.Lock()
 				capturedMessages.gatewayResponses[gatewayResp(message)] = struct{}{}
@@ -161,15 +197,40 @@ func testGatewayWSConn(t *testing.T, wsReqs map[clientReq]gatewayResp) (testWSCo
 					return
 				}
 
-				capturedMessages.Lock()
-				capturedMessages.clientRequests[clientReq(message)] = struct{}{}
-				capturedMessages.Unlock()
+				// Match the behaviour of temp Relay ID when handling subscription request
+				var relay relayPkg.Relay
+				err = json.Unmarshal(message, &relay)
+				if err != nil {
+					t.Error("Error unmarshalling message:", err)
+					return
+				}
+				if relay.Method == "eth_subscribe" {
+					message = []byte(
+						fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"%s","params":%s}`, relay.Method, relay.Params),
+					)
+				}
 
 				if response, ok := wsReqs[clientReq(message)]; ok {
+					// Match the behaviour of temp Relay ID when handling subscription request
+					var responseRelay relayPkg.Relay
+					err = json.Unmarshal([]byte(response), &responseRelay)
+					if err != nil {
+						t.Error("Error unmarshalling message:", err)
+						return
+					}
+					if relay.Method == "eth_subscribe" {
+						str := `{"jsonrpc":"2.0","id":"%s","result":%s}`
+						response = gatewayResp(fmt.Sprintf(str, relay.ID, responseRelay.Result))
+					}
+
 					if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
 						t.Error("Error sending response:", err)
 					}
 				}
+
+				capturedMessages.Lock()
+				capturedMessages.clientRequests[clientReq(message)] = struct{}{}
+				capturedMessages.Unlock()
 			}
 		}()
 	}
