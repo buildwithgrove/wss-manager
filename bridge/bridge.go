@@ -114,13 +114,14 @@ func (b *Bridge) Run() {
 		for {
 			messageType, message, err := b.gatewayConn.ReadMessage()
 			if err != nil {
+				b.log.Error("Error reading from gateway websocket:", err)
+
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					// TODO - implement Gateway reconnection logic
-					b.log.Info("gateway websocket closed")
+					b.log.Info("Gateway websocket closed")
 					return
 				}
 
-				b.log.Error("error reading from gateway websocket:", slog.String("error", err.Error()))
 				return
 			}
 
