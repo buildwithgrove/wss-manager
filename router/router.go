@@ -18,7 +18,6 @@ import (
 type (
 	wsRouter struct {
 		mux           *http.ServeMux
-		bridge        *bridge.Builder
 		logger        *logger.Logger
 		gatewayDomain string
 		imageTag      string
@@ -68,7 +67,6 @@ func methodCheckMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
 		mux:           http.NewServeMux(),
-		bridge:        bridge.NewBuilder(config.Logger),
 		gatewayDomain: config.GatewayDomain,
 		imageTag:      config.ImageTag,
 		logger:        config.Logger,
@@ -137,12 +135,11 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// build the gateway URL
-	// TODO - update to use wss:// ?
+	// create a new bridge, which includes creating a new gateway connection
+	// TODO - update gateway URL to use wss:// ?
 	gatewayURL := fmt.Sprintf("ws://%s.%s/v1/%s", chain, wr.gatewayDomain, appID)
 
-	// create a new bridge, which includes creating a new gateway connection
-	bridge, err := wr.bridge.NewBridge(appID, chain, clientWS, gatewayURL)
+	bridge, err := bridge.NewBridge(clientWS, gatewayURL, wr.logger)
 	if err != nil {
 		errString := fmt.Sprintf("error creating bridge: %s", err.Error())
 		wr.logger.Error(errString)

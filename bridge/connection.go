@@ -64,7 +64,7 @@ func (b *Bridge) reconnectToGateway() error {
 			}
 
 			b.log.Info("retrying to connect after backoff interval")
-			time.Sleep(backoffInterval)
+			<-time.After(backoffInterval)
 
 			// Increase the backoff interval for the next attempt
 			backoffInterval *= backoffFactor
@@ -92,8 +92,10 @@ func (b *Bridge) resumeSubscriptions() {
 		// Generate a temporary relay ID for the pending resubscribe request
 		tempRelayID := uuid.New().String()
 
-		// Store the original subscription ID with the temporary relay ID
+		// Store the original subscription ID with the temporary relay ID in the pending resubs map
+		b.mu.Lock()
 		b.pendingResubs[tempRelayID] = sub.OriginalSubID()
+		b.mu.Unlock()
 
 		var relay relayPkg.Relay
 		if err := json.Unmarshal(sub.RequestBody(), &relay); err != nil {

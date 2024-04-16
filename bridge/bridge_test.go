@@ -5,17 +5,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/logger"
 	subPkg "github.com/pokt-foundation/wss-manager/subscription"
 	mock "github.com/stretchr/testify/mock"
 )
 
-func NewTestBridge(app types.PortalAppID, chain types.ChainAlias, clientConn wsConnection, gatewayConn wsConnection, log *logger.Logger) *Bridge {
+func NewTestBridge(clientConn wsConnection, gatewayConn wsConnection, log *logger.Logger) *Bridge {
 	return &Bridge{
 		id:               uuid.New().String(),
-		app:              app,
-		chain:            chain,
 		clientConn:       clientConn,
 		gatewayConn:      gatewayConn,
 		log:              log,
@@ -53,7 +50,7 @@ func Test_Bridge_Run(t *testing.T) {
 			gatewayConn.On("ReadMessage").Return(1, test.gatewayPayload, nil)
 			clientConn.On("WriteMessage", 1, test.gatewayPayload).Return(nil)
 
-			bridge := NewTestBridge("appID", "chainAlias", clientConn, gatewayConn, logger)
+			bridge := NewTestBridge(clientConn, gatewayConn, logger)
 
 			// Start the bridge
 			go bridge.Run()

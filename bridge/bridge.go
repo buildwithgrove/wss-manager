@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/logger"
 	relayPkg "github.com/pokt-foundation/wss-manager/relay"
 	subPkg "github.com/pokt-foundation/wss-manager/subscription"
@@ -21,17 +21,13 @@ const (
 type (
 	// Bridge routes data between clients and servers
 	Bridge struct {
-		id    string
-		app   types.PortalAppID
-		chain types.ChainAlias
+		id string
 
 		clientConn     wsConnection
 		gatewayConn    wsConnection
 		gatewayURL     string
-		gatewayMsgChan chan gatewayMessage
+		gatewayMsgChan chan wsMessage
 		doneChan       chan struct{}
-
-		log *logger.Logger
 
 		subsByCurrentID  map[subPkg.SubscriptionID]*subPkg.Subscription
 		subsByOriginalID map[subPkg.SubscriptionID]*subPkg.Subscription
@@ -40,9 +36,8 @@ type (
 		pendingSubs   map[string]subPkg.PendingSubscribe
 		pendingUnsubs map[string]subPkg.PendingUnsubscribe
 		pendingResubs map[string]subPkg.SubscriptionID
-	}
 
-	Builder struct {
+		mu  sync.RWMutex
 		log *logger.Logger
 	}
 
@@ -52,34 +47,27 @@ type (
 		Close() error
 	}
 
-	gatewayMessage struct {
-		message     []byte
+	wsMessage struct {
 		messageType int
+		message     []byte
 		err         error
 	}
 )
 
-func NewBuilder(log *logger.Logger) *Builder {
-	return &Builder{
-		log: log,
-	}
-}
-
-func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn wsConnection, gatewayURL string) (*Bridge, error) {
+func NewBridge(clientConn wsConnection, gatewayURL string, log *logger.Logger) (*Bridge, error) {
 	bridge := &Bridge{
 		id:               uuid.New().String(),
-		app:              app,
-		chain:            chain,
 		clientConn:       clientConn,
 		gatewayURL:       gatewayURL,
-		gatewayMsgChan:   make(chan gatewayMessage, 100_000),
+		gatewayMsgChan:   make(chan wsMessage, 100_000),
 		doneChan:         make(chan struct{}),
+		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
+		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
 		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
 		pendingResubs:    make(map[string]subPkg.SubscriptionID),
-		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
-		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
-		log:              b.log,
+		mu:               sync.RWMutex{},
+		log:              log,
 	}
 
 	gatewayWS, err := bridge.connectGateway()
@@ -102,9 +90,9 @@ func (b *Bridge) Run() {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					b.log.Info("client websocket closed")
 
-					// Close the gateway connection if client connection closed
+					// If client connection is closed, close the gateway connection as well
 					close(b.doneChan)
-					close(b.gatewayMsgChan)
+					// close(b.gatewayMsgChan)
 					b.gatewayConn.Close()
 
 					return
@@ -134,23 +122,28 @@ func (b *Bridge) Run() {
 		for {
 			messageType, message, err := b.gatewayConn.ReadMessage()
 			if err != nil {
-
-				// If the gateway connection is closed unexpectedly, attempt to reconnect
+				// If the gateway connection is closed, attempt to reconnect
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
 					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect")
 
 					if reconnectErr := b.reconnectToGateway(); reconnectErr == nil {
-						continue // Resume loop if reconnection was successful
+						continue // Resume gateway read loop if reconnection was successful
 					}
 
 					b.log.Error("failed to reconnect to gateway, stopping bridge operation")
 					return
 				}
 
-				return
+				// If the error is not a close error is is net error; this handles the case where the
+				// gateway connection is closed in response to the client connection being closed
+				// TODO - does this handle all possible errors in this case; don't want to be ignoring valid errors if not
+				if _, ok := err.(*websocket.CloseError); !ok {
+					return
+				}
 			}
-			// Wrap messageType and message into a Message struct and send it to gatewayMsgChan
-			b.gatewayMsgChan <- gatewayMessage{message: message, messageType: messageType}
+
+			// Wrap responses in a wsMessage struct and send it to gatewayMsgChan
+			b.gatewayMsgChan <- wsMessage{messageType: messageType, message: message, err: err}
 		}
 	}()
 
@@ -165,7 +158,6 @@ func (b *Bridge) Run() {
 
 			// Otherwise read from gatewayMsgChan and write to client
 			case msg := <-b.gatewayMsgChan:
-
 				messageType, message, err := msg.messageType, msg.message, msg.err
 				if err != nil {
 					b.log.Error("error reading from gateway websocket:", slog.String("error", err.Error()))
@@ -179,6 +171,7 @@ func (b *Bridge) Run() {
 					continue
 				}
 
+				// If the message is a resubscribe confirmation from the gateway do not forward it to the client
 				if processedMsg == nil {
 					continue
 				}
@@ -193,44 +186,7 @@ func (b *Bridge) Run() {
 	}()
 }
 
-// Private methods
-
-func (b *Bridge) addSubscription(relay relayPkg.Relay, requestBody []byte) error {
-	var subID subPkg.SubscriptionID
-	if err := json.Unmarshal(relay.Result, &subID); err != nil {
-		return fmt.Errorf("error unmarshalling subscription ID: %w", err)
-	}
-
-	subscription := subPkg.NewSubscription(subID, requestBody)
-
-	b.subsByCurrentID[subID] = subscription
-	b.subsByOriginalID[subID] = subscription
-
-	return nil
-}
-
-func (b *Bridge) removeSubscription(originalSubID subPkg.SubscriptionID) {
-	if subscription, ok := b.subsByOriginalID[originalSubID]; ok {
-		delete(b.subsByCurrentID, subscription.CurrentSubID())
-	}
-
-	delete(b.subsByOriginalID, originalSubID)
-}
-
-func (b *Bridge) updateSubscription(relay relayPkg.Relay, originalSubID subPkg.SubscriptionID) error {
-	var newSubID subPkg.SubscriptionID
-	if err := json.Unmarshal(relay.Result, &newSubID); err != nil {
-		return fmt.Errorf("error unmarshalling subscription ID: %w", err)
-	}
-
-	if subscription, ok := b.subsByOriginalID[originalSubID]; ok {
-		subscription.SetCurrentSubID(newSubID)
-		b.subsByCurrentID[newSubID] = subscription
-		delete(b.subsByCurrentID, originalSubID)
-	}
-
-	return nil
-}
+/* ---------- Private methods ---------- */
 
 // processClientRequest checks if a client request is either an 'eth_subscribe' or 'eth_unsubscribe' method.
 func (b *Bridge) processClientRequest(message []byte) ([]byte, error) {
@@ -259,10 +215,12 @@ func (b *Bridge) handleSubscribeRequest(relay relayPkg.Relay, requestBody []byte
 	tempRelayID := uuid.New().String()
 
 	// Store the pending subscription with the temporary relay ID
+	b.mu.Lock()
 	b.pendingSubs[tempRelayID] = subPkg.PendingSubscribe{
 		OriginalRelayID: relay.ID,
 		RequestBody:     requestBody,
 	}
+	b.mu.Unlock()
 
 	// Replace the original relay ID with the temporary one in the message
 	relay.ID = relayPkg.IDFromString(tempRelayID)
@@ -286,7 +244,9 @@ func (b *Bridge) handleUnsubscribeRequest(relay relayPkg.Relay) ([]byte, error) 
 	}
 
 	// Get current sub ID from subsByOriginalID map
+	b.mu.RLock()
 	subscription, ok := b.subsByOriginalID[subPkg.SubscriptionID(params[0])]
+	b.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("subscription not found")
 	}
@@ -303,10 +263,12 @@ func (b *Bridge) handleUnsubscribeRequest(relay relayPkg.Relay) ([]byte, error) 
 	tempRelayID := uuid.New().String()
 
 	// Store the pending subscription with the temporary relay ID
+	b.mu.Lock()
 	b.pendingUnsubs[tempRelayID] = subPkg.PendingUnsubscribe{
 		OriginalRelayID: relay.ID,
 		OriginalSubID:   subscription.OriginalSubID(),
 	}
+	b.mu.Unlock()
 
 	// Replace the original relay ID with the temporary one in the message
 	relay.ID = relayPkg.IDFromString(tempRelayID)
@@ -320,7 +282,8 @@ func (b *Bridge) handleUnsubscribeRequest(relay relayPkg.Relay) ([]byte, error) 
 	return modifiedMessage, nil
 }
 
-// processGatewayResponse checks if a gateway response is either an 'eth_subscribe' or 'eth_unsubscribe' method.
+// processGatewayResponse checks if a gateway response is an active subscription event,
+// or a response to an 'eth_subscribe', 'eth_unsubscribe' or resubscription request.
 func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 	var relay relayPkg.Relay
 	if err := json.Unmarshal(message, &relay); err != nil {
@@ -334,19 +297,24 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 
 	// If a response to a subscribe or unsubscribe request the ID will be a temp UUID
 	if tempRelayID := relay.ID.String(); tempRelayID != "" {
-
 		// If response is a subscription confirmation save the subscription to the subscriptions map
+		b.mu.RLock()
 		if pendingSub, ok := b.pendingSubs[tempRelayID]; ok {
+			b.mu.RUnlock()
 			return b.handleSubscribeResponse(relay, pendingSub, tempRelayID)
 		}
 
 		// If response is a unsubscription confirmation remove the subscription from the subscriptions map
+		b.mu.RLock()
 		if pendingUnsub, ok := b.pendingUnsubs[tempRelayID]; ok {
+			b.mu.RUnlock()
 			return b.handleUnsubscribeResponse(relay, pendingUnsub, tempRelayID)
 		}
 
 		// If response is a resubscribe confirmation update the current sub ID
+		b.mu.RLock()
 		if pendingResub, ok := b.pendingResubs[tempRelayID]; ok {
+			b.mu.RUnlock()
 			err := b.handleResubscribeResponse(relay, pendingResub, tempRelayID)
 			if err != nil {
 				return nil, fmt.Errorf("error handling resubscribe response: %w", err)
@@ -356,67 +324,6 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 
 	// If none of the above return the unmodified message
 	return message, nil
-}
-
-func (b *Bridge) handleSubscribeResponse(relay relayPkg.Relay, pendingSub subPkg.PendingSubscribe, tempRelayID string) ([]byte, error) {
-	b.log.Info("received eth_subscribe confirmation from gateway")
-
-	if err := b.addSubscription(relay, pendingSub.RequestBody); err != nil {
-		return nil, fmt.Errorf("error adding subscription: %w", err)
-	}
-
-	// Replace original relay ID before returning response to client
-	relay.ID = pendingSub.OriginalRelayID
-
-	msgWithOriginalID, err := json.Marshal(relay)
-	if err != nil {
-		return nil, fmt.Errorf("error marshalling subscription confirmation: %w", err)
-	}
-
-	// Clear pending sub from map
-	delete(b.pendingSubs, tempRelayID)
-
-	return msgWithOriginalID, nil
-}
-
-func (b *Bridge) handleUnsubscribeResponse(relay relayPkg.Relay, pendingUnsub subPkg.PendingUnsubscribe, tempRelayID string) ([]byte, error) {
-	b.log.Info("received eth_unsubscribe confirmation from gateway")
-
-	// If the unsubscribe was successful the result field will be 'true'
-	var unsubConfirmation bool
-	if err := json.Unmarshal(relay.Result, &unsubConfirmation); err != nil {
-		return nil, fmt.Errorf("error unmarshalling unsubscribe confirmation: %w", err)
-	}
-	if unsubConfirmation {
-		b.removeSubscription(pendingUnsub.OriginalSubID)
-	}
-
-	// Replace original relay ID before returning response to client
-	relay.ID = pendingUnsub.OriginalRelayID
-
-	msgWithOriginalID, err := json.Marshal(relay)
-	if err != nil {
-		return nil, fmt.Errorf("error marshalling unsubscribe relay: %w", err)
-	}
-
-	// Clear pending unsub from map
-	delete(b.pendingUnsubs, tempRelayID)
-
-	return msgWithOriginalID, nil
-}
-
-func (b *Bridge) handleResubscribeResponse(relay relayPkg.Relay, originalSubID subPkg.SubscriptionID, tempRelayID string) error {
-	b.log.Info("received eth_subscribe resubscribe confirmation from gateway")
-
-	err := b.updateSubscription(relay, originalSubID)
-	if err != nil {
-		return fmt.Errorf("error handling resubscribe response: %w", err)
-	}
-
-	// Clear pending sub from map
-	delete(b.pendingResubs, tempRelayID)
-
-	return nil
 }
 
 func (b *Bridge) isSubscriptionEvent(relay relayPkg.Relay) (relayPkg.SubscriptionEventParams, bool) {
@@ -429,7 +336,9 @@ func (b *Bridge) isSubscriptionEvent(relay relayPkg.Relay) (relayPkg.Subscriptio
 }
 
 func (b *Bridge) handleSubscriptionEvent(params relayPkg.SubscriptionEventParams, relay relayPkg.Relay) ([]byte, error) {
+	b.mu.RLock()
 	subscription, ok := b.subsByCurrentID[subPkg.SubscriptionID(params.Subscription)]
+	b.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("subscription not found for current sub ID: %s", params.Subscription)
 	}
@@ -449,4 +358,128 @@ func (b *Bridge) handleSubscriptionEvent(params relayPkg.SubscriptionEventParams
 	}
 
 	return json, nil
+}
+
+func (b *Bridge) handleSubscribeResponse(relay relayPkg.Relay, pendingSub subPkg.PendingSubscribe, tempRelayID string) ([]byte, error) {
+	b.log.Info("received eth_subscribe confirmation from gateway")
+
+	if err := b.addSubscription(relay, pendingSub.RequestBody); err != nil {
+		return nil, fmt.Errorf("error adding subscription: %w", err)
+	}
+
+	// Replace original relay ID before returning response to client
+	relay.ID = pendingSub.OriginalRelayID
+
+	msgWithOriginalID, err := json.Marshal(relay)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling subscription confirmation: %w", err)
+	}
+
+	// Clear pending sub from map
+	b.mu.Lock()
+	delete(b.pendingSubs, tempRelayID)
+	b.mu.Unlock()
+
+	return msgWithOriginalID, nil
+}
+
+func (b *Bridge) addSubscription(relay relayPkg.Relay, requestBody []byte) error {
+	var subID subPkg.SubscriptionID
+	if err := json.Unmarshal(relay.Result, &subID); err != nil {
+		return fmt.Errorf("error unmarshalling subscription ID: %w", err)
+	}
+
+	subscription := subPkg.NewSubscription(subID, requestBody)
+
+	b.mu.Lock()
+	b.subsByCurrentID[subID] = subscription
+	b.subsByOriginalID[subID] = subscription
+	b.mu.Unlock()
+
+	return nil
+}
+
+func (b *Bridge) handleUnsubscribeResponse(relay relayPkg.Relay, pendingUnsub subPkg.PendingUnsubscribe, tempRelayID string) ([]byte, error) {
+	b.log.Info("received eth_unsubscribe confirmation from gateway")
+
+	// If the unsubscribe was successful the result field will be 'true'
+	var unsubConfirmation bool
+	if err := json.Unmarshal(relay.Result, &unsubConfirmation); err != nil {
+		return nil, fmt.Errorf("error unmarshalling unsubscribe confirmation: %w", err)
+	}
+	if unsubConfirmation {
+		if err := b.removeSubscription(pendingUnsub.OriginalSubID); err != nil {
+			return nil, fmt.Errorf("error removing subscription: %w", err)
+		}
+	}
+
+	// Replace original relay ID before returning response to client
+	relay.ID = pendingUnsub.OriginalRelayID
+
+	msgWithOriginalID, err := json.Marshal(relay)
+	if err != nil {
+		return nil, fmt.Errorf("error marshalling unsubscribe relay: %w", err)
+	}
+
+	// Clear pending unsub from map
+	b.mu.Lock()
+	delete(b.pendingUnsubs, tempRelayID)
+	b.mu.Unlock()
+
+	return msgWithOriginalID, nil
+}
+
+func (b *Bridge) removeSubscription(originalSubID subPkg.SubscriptionID) error {
+	b.mu.RLock()
+	subscription, ok := b.subsByOriginalID[originalSubID]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("subscription not found for original sub ID: %s", originalSubID)
+	}
+
+	b.mu.Lock()
+	delete(b.subsByOriginalID, originalSubID)
+	delete(b.subsByCurrentID, subscription.CurrentSubID())
+	b.mu.Unlock()
+
+	return nil
+}
+
+func (b *Bridge) handleResubscribeResponse(relay relayPkg.Relay, originalSubID subPkg.SubscriptionID, tempRelayID string) error {
+	b.log.Info("received eth_subscribe resubscribe confirmation from gateway")
+
+	err := b.updateSubscription(relay, originalSubID)
+	if err != nil {
+		return fmt.Errorf("error handling resubscribe response: %w", err)
+	}
+
+	// Clear pending resub from map
+	b.mu.Lock()
+	delete(b.pendingResubs, tempRelayID)
+	b.mu.Unlock()
+
+	return nil
+}
+
+func (b *Bridge) updateSubscription(relay relayPkg.Relay, originalSubID subPkg.SubscriptionID) error {
+	var newSubID subPkg.SubscriptionID
+	if err := json.Unmarshal(relay.Result, &newSubID); err != nil {
+		return fmt.Errorf("error unmarshalling subscription ID: %w", err)
+	}
+
+	b.mu.RLock()
+	subscription, ok := b.subsByOriginalID[originalSubID]
+	b.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("subscription not found for original sub ID: %s", originalSubID)
+	}
+
+	// Update current sub ID in current sub IDs map and remove original sub ID from map
+	b.mu.Lock()
+	subscription.SetCurrentSubID(newSubID)
+	b.subsByCurrentID[newSubID] = subscription
+	delete(b.subsByCurrentID, originalSubID)
+	b.mu.Unlock()
+
+	return nil
 }
