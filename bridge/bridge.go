@@ -21,9 +21,7 @@ type (
 
 		log *logger.Logger
 
-		req http.Request
-
-		// TODO - add subscription map for the bridge
+		req *http.Request
 	}
 
 	Builder struct {
@@ -43,7 +41,7 @@ func NewBuilder(log *logger.Logger) *Builder {
 	}
 }
 
-func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection, req http.Request) *Bridge {
+func (b *Builder) NewBridge(app types.PortalAppID, chain types.ChainAlias, clientConn, gatewayConn wsConnection, req *http.Request) *Bridge {
 	return &Bridge{
 		id:          uuid.New(),
 		app:         app,
@@ -90,10 +88,13 @@ func (b *Bridge) Run() {
 			messageType, message, err := b.gatewayConn.ReadMessage()
 			if err != nil {
 				b.log.Error("Error reading from gateway websocket:", err)
+
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					// TODO - implement Gateway reconnection logic
 					b.log.Info("Gateway websocket closed")
+					return
 				}
+
 				return
 			}
 
@@ -106,12 +107,4 @@ func (b *Bridge) Run() {
 			}
 		}
 	}()
-}
-
-func (b *Bridge) Chain() types.ChainAlias {
-	return b.chain
-}
-
-func (b *Bridge) App() types.PortalAppID {
-	return b.app
 }

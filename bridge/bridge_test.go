@@ -35,7 +35,7 @@ func Test_Bridge_Run(t *testing.T) {
 			gatewayConn.On("ReadMessage").Return(1, test.gatewayPayload, nil)
 			clientConn.On("WriteMessage", 1, test.gatewayPayload).Return(nil)
 
-			bridge := NewBuilder(logger).NewBridge("appID", "chainAlias", clientConn, gatewayConn, http.Request{})
+			bridge := NewBuilder(logger).NewBridge("appID", "chainAlias", clientConn, gatewayConn, &http.Request{})
 
 			// Start the bridge
 			go bridge.Run()
