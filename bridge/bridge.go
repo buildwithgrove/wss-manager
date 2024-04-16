@@ -134,7 +134,7 @@ func (b *Bridge) Run() {
 					return
 				}
 
-				// If the error is not a close error is is net error; this handles the case where the
+				// If the error is not a close error it is net error; this handles the case where the
 				// gateway connection is closed in response to the client connection being closed
 				// TODO - does this handle all possible errors in this case; don't want to be ignoring valid errors if not
 				if _, ok := err.(*websocket.CloseError); !ok {
