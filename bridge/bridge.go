@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+
 	"github.com/pokt-foundation/utils-go/logger"
 	relayPkg "github.com/pokt-foundation/wss-manager/relay"
 	subPkg "github.com/pokt-foundation/wss-manager/subscription"
@@ -16,35 +18,51 @@ import (
 const (
 	ethSubscribe   = "eth_subscribe"
 	ethUnsubscribe = "eth_unsubscribe"
+
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 30 * time.Second
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
 )
 
 type (
-	// Bridge routes data between clients and servers
+	// Bridge routes data between clients and the Gateway.
+	// One bridge represents exactly one WebSocket connection between a Client and the Gateway.
+	// It will be connected to a Bridge in the Gateway between the Gateway and a WebSocket node.
+	//
+	// eg. full data flow: Client <-> WSS Manager <-> Gateway <-> WebSocket Node
+	//
+	// In the case of a Gateway disconnection, the Bridge will attempt a reconnection to the
+	// Gateway, including re-establishing any subscriptions. The Client will not be aware of this
+	// reconnection logic as their side of the bridge will remain connected at all times.
 	Bridge struct {
-		id string
-
-		clientConn     wsConnection
-		gatewayConn    wsConnection
-		gatewayURL     string
-		gatewayMsgChan chan wsMessage
-		doneChan       chan struct{}
+		clientConn              *websocket.Conn
+		gatewayConn             *websocket.Conn
+		gatewayURL              string
+		maxReconnectionAttempts int
+		gatewayMsgChan          chan wsMessage
+		doneChan                chan struct{}
+		pausePingLoop           chan struct{}
+		resumePingLoop          chan struct{}
+		wsLock                  sync.Mutex
 
 		subsByCurrentID  map[subPkg.SubscriptionID]*subPkg.Subscription
 		subsByOriginalID map[subPkg.SubscriptionID]*subPkg.Subscription
+		pendingSubs      map[string]subPkg.PendingSubscribe
+		pendingUnsubs    map[string]subPkg.PendingUnsubscribe
+		pendingResubs    map[string]subPkg.SubscriptionID
+		subsLock         sync.RWMutex
 
-		// TODO - clear pending subs on interval?
-		pendingSubs   map[string]subPkg.PendingSubscribe
-		pendingUnsubs map[string]subPkg.PendingUnsubscribe
-		pendingResubs map[string]subPkg.SubscriptionID
-
-		mu  sync.RWMutex
 		log *logger.Logger
 	}
 
-	wsConnection interface {
-		ReadMessage() (messageType int, p []byte, err error)
-		WriteMessage(messageType int, data []byte) error
-		Close() error
+	Config struct {
+		GatewayURL              string
+		ClientConn              *websocket.Conn
+		MaxReconnectionAttempts int
+		Log                     *logger.Logger
 	}
 
 	wsMessage struct {
@@ -54,20 +72,25 @@ type (
 	}
 )
 
-func NewBridge(clientConn wsConnection, gatewayURL string, log *logger.Logger) (*Bridge, error) {
+func NewBridge(config Config) (*Bridge, error) {
 	bridge := &Bridge{
-		id:               uuid.New().String(),
-		clientConn:       clientConn,
-		gatewayURL:       gatewayURL,
-		gatewayMsgChan:   make(chan wsMessage, 100_000),
-		doneChan:         make(chan struct{}),
+		clientConn:              config.ClientConn,
+		gatewayURL:              config.GatewayURL,
+		maxReconnectionAttempts: config.MaxReconnectionAttempts,
+		gatewayMsgChan:          make(chan wsMessage, 100_000),
+		doneChan:                make(chan struct{}),
+		pausePingLoop:           make(chan struct{}),
+		resumePingLoop:          make(chan struct{}),
+		wsLock:                  sync.Mutex{},
+
 		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
 		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
 		pendingResubs:    make(map[string]subPkg.SubscriptionID),
-		mu:               sync.RWMutex{},
-		log:              log,
+		subsLock:         sync.RWMutex{},
+
+		log: config.Log,
 	}
 
 	gatewayWS, err := bridge.connectGateway()
@@ -80,113 +103,198 @@ func NewBridge(clientConn wsConnection, gatewayURL string, log *logger.Logger) (
 	return bridge, nil
 }
 
+/* ---------- Public method - Run Bridge ---------- */
+
 // Run starts the bridge and establishes a bidirectional communication between the client and server
 func (b *Bridge) Run() {
 	// Start goroutine to read from client and write to gateway
-	go func() {
-		for {
-			messageType, msg, err := b.clientConn.ReadMessage()
-			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					b.log.Info("client websocket closed")
+	go b.clientReadWriteLoop()
 
-					// If client connection is closed, close the gateway connection as well
-					close(b.doneChan)
-					// close(b.gatewayMsgChan)
-					b.gatewayConn.Close()
+	// Start goroutine to read from gateway and send to gatewayMsgChan
+	// This is also where the gateway reconnection logic is implemented
+	go b.gatewayReadLoop()
 
-					return
-				}
+	// Start goroutine to read from gatewayMsgChan and write to client
+	go b.gatewayWriteLoop()
 
-				b.log.Error("error reading from client websocket:", slog.String("error", err.Error()))
+	// Start goroutines to run keep-alive pings for both client and gateway
+	go b.pingLoop(b.clientConn)
+	go b.pingLoop(b.gatewayConn)
+}
+
+/* ---------- Private methods - WebSocket loop methods ---------- */
+
+// clientReadWriteLoop reads from the client connection and writes to the gateway connection
+func (b *Bridge) clientReadWriteLoop() {
+	for {
+		messageType, msg, err := b.clientConn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				b.log.Info("client websocket closed")
+
+				// If client connection is closed, close the gateway connection as well
+				close(b.doneChan)
+				b.gatewayConn.Close()
+
 				return
 			}
 
-			// Check if the message is a subscribe or unsubscribe request
-			processedMsg, err := b.processClientRequest(msg)
+			b.log.Error("error reading from client websocket:", slog.String("error", err.Error()))
+			return
+		}
+
+		// Check if the message is a subscribe or unsubscribe request
+		processedMsg, err := b.processClientRequest(msg)
+		if err != nil {
+			b.log.Error("error processing client request:", slog.String("error", err.Error()))
+			continue
+		}
+
+		b.wsLock.Lock()
+		err = b.gatewayConn.WriteMessage(messageType, processedMsg)
+		if err != nil {
+			b.log.Error("error writing to gateway websocket:", slog.String("error", err.Error()))
+			b.wsLock.Unlock()
+			return
+		}
+		b.wsLock.Unlock()
+	}
+}
+
+// gatewayReadLoop reads from the gateway connection and writes to the gatewayMsgChan
+// This is also where the gateway reconnection logic is implemented
+func (b *Bridge) gatewayReadLoop() {
+	for {
+		messageType, message, err := b.gatewayConn.ReadMessage()
+		if err != nil {
+			// If the gateway connection is closed, attempt to reconnect
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+				b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect")
+
+				b.pausePingLoop <- struct{}{}
+				if reconnectErr := b.reconnectToGateway(); reconnectErr == nil {
+					b.resumePingLoop <- struct{}{}
+					continue // Resume gateway read loop if reconnection was successful
+				}
+
+				// If the gateway reconnection failed, stop the bridge operation
+				b.log.Error("failed to reconnect to gateway, stopping bridge operation")
+				close(b.doneChan)
+				b.clientConn.Close()
+				return
+			}
+
+			// If the error is not a close error it is net error; this handles the case where the
+			// gateway connection is closed in response to the client connection being closed
+			// TODO - does this handle all possible errors in this case; don't want to be ignoring valid errors if not
+			if _, ok := err.(*websocket.CloseError); !ok {
+				return
+			}
+
+			// If the gateway connection is closed, close the client connection as well
+			b.log.Error("error reading from gateway websocket:", slog.String("error", err.Error()))
+			close(b.doneChan)
+			b.clientConn.Close()
+			return
+		}
+
+		// Wrap responses in a wsMessage struct and send it to gatewayMsgChan
+		b.gatewayMsgChan <- wsMessage{messageType: messageType, message: message, err: err}
+	}
+}
+
+// gatewayWriteLoop reads from the gatewayMsgChan and writes to the client connection
+func (b *Bridge) gatewayWriteLoop() {
+	for {
+		select {
+		// If client connection closed, close the gateway connection
+		case <-b.doneChan:
+			b.log.Info("gateway websocket closed")
+			return
+
+		// Otherwise read from gatewayMsgChan and write to client
+		case msg := <-b.gatewayMsgChan:
+			messageType, message, err := msg.messageType, msg.message, msg.err
 			if err != nil {
-				b.log.Error("error processing client request:", slog.String("error", err.Error()))
+				b.log.Error("error reading from gateway websocket:", slog.String("error", err.Error()))
+				return
+			}
+
+			// Check if the message is a response to a pending subscribe or unsubscribe request
+			processedMsg, err := b.processGatewayResponse(message)
+			if err != nil {
+				b.log.Error("error processing gateway request:", slog.String("error", err.Error()))
 				continue
 			}
 
-			err = b.gatewayConn.WriteMessage(messageType, processedMsg)
+			// If the message is a resubscribe confirmation from the gateway do not forward it to the client
+			if processedMsg == nil {
+				continue
+			}
+
+			b.wsLock.Lock()
+			err = b.clientConn.WriteMessage(messageType, processedMsg)
 			if err != nil {
-				b.log.Error("error writing to gateway websocket:", slog.String("error", err.Error()))
+				b.log.Error("error writing to client websocket:", slog.String("error", err.Error()))
+				b.wsLock.Unlock()
 				return
 			}
+			b.wsLock.Unlock()
 		}
-	}()
-
-	// Start goroutine to read from gateway and send to gatewayMsgChan
-	go func() {
-		for {
-			messageType, message, err := b.gatewayConn.ReadMessage()
-			if err != nil {
-				// If the gateway connection is closed, attempt to reconnect
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
-					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect")
-
-					if reconnectErr := b.reconnectToGateway(); reconnectErr == nil {
-						continue // Resume gateway read loop if reconnection was successful
-					}
-
-					b.log.Error("failed to reconnect to gateway, stopping bridge operation")
-					return
-				}
-
-				// If the error is not a close error it is net error; this handles the case where the
-				// gateway connection is closed in response to the client connection being closed
-				// TODO - does this handle all possible errors in this case; don't want to be ignoring valid errors if not
-				if _, ok := err.(*websocket.CloseError); !ok {
-					return
-				}
-			}
-
-			// Wrap responses in a wsMessage struct and send it to gatewayMsgChan
-			b.gatewayMsgChan <- wsMessage{messageType: messageType, message: message, err: err}
-		}
-	}()
-
-	// Start goroutine to read from gatewayMsgChan and write to client
-	go func() {
-		for {
-			select {
-			// If client connection closed, close the gateway connection
-			case <-b.doneChan:
-				b.log.Info("gateway websocket closed")
-				return
-
-			// Otherwise read from gatewayMsgChan and write to client
-			case msg := <-b.gatewayMsgChan:
-				messageType, message, err := msg.messageType, msg.message, msg.err
-				if err != nil {
-					b.log.Error("error reading from gateway websocket:", slog.String("error", err.Error()))
-					return
-				}
-
-				// Check if the message is a response to a pending subscribe or unsubscribe request
-				processedMsg, err := b.processGatewayResponse(message)
-				if err != nil {
-					b.log.Error("error processing gateway request:", slog.String("error", err.Error()))
-					continue
-				}
-
-				// If the message is a resubscribe confirmation from the gateway do not forward it to the client
-				if processedMsg == nil {
-					continue
-				}
-
-				err = b.clientConn.WriteMessage(messageType, processedMsg)
-				if err != nil {
-					b.log.Error("error writing to client websocket:", slog.String("error", err.Error()))
-					return
-				}
-			}
-		}
-	}()
+	}
 }
 
-/* ---------- Private methods ---------- */
+// pingLoop sends keep-alive ping messages to the connection and handles pong messages
+func (b *Bridge) pingLoop(conn *websocket.Conn) {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		conn.Close()
+	}()
+
+	// Set initial read deadline
+	if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		b.log.Error("failed to set initial read deadline:", slog.String("error", err.Error()))
+	}
+	// Extend read deadline on pong response
+	conn.SetPongHandler(func(string) error {
+		if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+			b.log.Error("failed to set pong handler read deadline:", slog.String("error", err.Error()))
+		}
+		return nil
+	})
+
+	paused := false
+
+	for {
+		select {
+		case <-b.doneChan:
+			return
+
+		case <-b.pausePingLoop:
+			paused = true
+
+		case <-b.resumePingLoop:
+			paused = false
+			// Reset read deadline when resuming ping loop
+			if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+				b.log.Error("failed to reset read deadline when resuming ping loop:", slog.String("error", err.Error()))
+			}
+			ticker.Reset(pingPeriod)
+
+		case <-ticker.C:
+			if paused {
+				continue
+			}
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
+				b.log.Error("failed to send ping:", slog.String("error", err.Error()))
+				return
+			}
+		}
+	}
+}
+
+/* ---------- Private methods - Client Request Handling ---------- */
 
 // processClientRequest checks if a client request is either an 'eth_subscribe' or 'eth_unsubscribe' method.
 func (b *Bridge) processClientRequest(message []byte) ([]byte, error) {
@@ -215,12 +323,12 @@ func (b *Bridge) handleSubscribeRequest(relay relayPkg.Relay, requestBody []byte
 	tempRelayID := uuid.New().String()
 
 	// Store the pending subscription with the temporary relay ID
-	b.mu.Lock()
+	b.subsLock.Lock()
 	b.pendingSubs[tempRelayID] = subPkg.PendingSubscribe{
 		OriginalRelayID: relay.ID,
 		RequestBody:     requestBody,
 	}
-	b.mu.Unlock()
+	b.subsLock.Unlock()
 
 	// Replace the original relay ID with the temporary one in the message
 	relay.ID = relayPkg.IDFromString(tempRelayID)
@@ -244,9 +352,9 @@ func (b *Bridge) handleUnsubscribeRequest(relay relayPkg.Relay) ([]byte, error) 
 	}
 
 	// Get current sub ID from subsByOriginalID map
-	b.mu.RLock()
+	b.subsLock.RLock()
 	subscription, ok := b.subsByOriginalID[subPkg.SubscriptionID(params[0])]
-	b.mu.RUnlock()
+	b.subsLock.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("subscription not found")
 	}
@@ -263,12 +371,12 @@ func (b *Bridge) handleUnsubscribeRequest(relay relayPkg.Relay) ([]byte, error) 
 	tempRelayID := uuid.New().String()
 
 	// Store the pending subscription with the temporary relay ID
-	b.mu.Lock()
+	b.subsLock.Lock()
 	b.pendingUnsubs[tempRelayID] = subPkg.PendingUnsubscribe{
 		OriginalRelayID: relay.ID,
 		OriginalSubID:   subscription.OriginalSubID(),
 	}
-	b.mu.Unlock()
+	b.subsLock.Unlock()
 
 	// Replace the original relay ID with the temporary one in the message
 	relay.ID = relayPkg.IDFromString(tempRelayID)
@@ -281,6 +389,8 @@ func (b *Bridge) handleUnsubscribeRequest(relay relayPkg.Relay) ([]byte, error) 
 
 	return modifiedMessage, nil
 }
+
+/* ---------- Private methods - Gateway Response Handling ---------- */
 
 // processGatewayResponse checks if a gateway response is an active subscription event,
 // or a response to an 'eth_subscribe', 'eth_unsubscribe' or resubscription request.
@@ -298,23 +408,23 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 	// If a response to a subscribe or unsubscribe request the ID will be a temp UUID
 	if tempRelayID := relay.ID.String(); tempRelayID != "" {
 		// If response is a subscription confirmation save the subscription to the subscriptions map
-		b.mu.RLock()
+		b.subsLock.RLock()
 		if pendingSub, ok := b.pendingSubs[tempRelayID]; ok {
-			b.mu.RUnlock()
+			b.subsLock.RUnlock()
 			return b.handleSubscribeResponse(relay, pendingSub, tempRelayID)
 		}
 
 		// If response is a unsubscription confirmation remove the subscription from the subscriptions map
-		b.mu.RLock()
+		b.subsLock.RLock()
 		if pendingUnsub, ok := b.pendingUnsubs[tempRelayID]; ok {
-			b.mu.RUnlock()
+			b.subsLock.RUnlock()
 			return b.handleUnsubscribeResponse(relay, pendingUnsub, tempRelayID)
 		}
 
 		// If response is a resubscribe confirmation update the current sub ID
-		b.mu.RLock()
+		b.subsLock.RLock()
 		if pendingResub, ok := b.pendingResubs[tempRelayID]; ok {
-			b.mu.RUnlock()
+			b.subsLock.RUnlock()
 			err := b.handleResubscribeResponse(relay, pendingResub, tempRelayID)
 			if err != nil {
 				return nil, fmt.Errorf("error handling resubscribe response: %w", err)
@@ -336,9 +446,9 @@ func (b *Bridge) isSubscriptionEvent(relay relayPkg.Relay) (relayPkg.Subscriptio
 }
 
 func (b *Bridge) handleSubscriptionEvent(params relayPkg.SubscriptionEventParams, relay relayPkg.Relay) ([]byte, error) {
-	b.mu.RLock()
+	b.subsLock.RLock()
 	subscription, ok := b.subsByCurrentID[subPkg.SubscriptionID(params.Subscription)]
-	b.mu.RUnlock()
+	b.subsLock.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("subscription not found for current sub ID: %s", params.Subscription)
 	}
@@ -376,9 +486,9 @@ func (b *Bridge) handleSubscribeResponse(relay relayPkg.Relay, pendingSub subPkg
 	}
 
 	// Clear pending sub from map
-	b.mu.Lock()
+	b.subsLock.Lock()
 	delete(b.pendingSubs, tempRelayID)
-	b.mu.Unlock()
+	b.subsLock.Unlock()
 
 	return msgWithOriginalID, nil
 }
@@ -391,10 +501,10 @@ func (b *Bridge) addSubscription(relay relayPkg.Relay, requestBody []byte) error
 
 	subscription := subPkg.NewSubscription(subID, requestBody)
 
-	b.mu.Lock()
+	b.subsLock.Lock()
 	b.subsByCurrentID[subID] = subscription
 	b.subsByOriginalID[subID] = subscription
-	b.mu.Unlock()
+	b.subsLock.Unlock()
 
 	return nil
 }
@@ -422,25 +532,25 @@ func (b *Bridge) handleUnsubscribeResponse(relay relayPkg.Relay, pendingUnsub su
 	}
 
 	// Clear pending unsub from map
-	b.mu.Lock()
+	b.subsLock.Lock()
 	delete(b.pendingUnsubs, tempRelayID)
-	b.mu.Unlock()
+	b.subsLock.Unlock()
 
 	return msgWithOriginalID, nil
 }
 
 func (b *Bridge) removeSubscription(originalSubID subPkg.SubscriptionID) error {
-	b.mu.RLock()
+	b.subsLock.RLock()
 	subscription, ok := b.subsByOriginalID[originalSubID]
-	b.mu.RUnlock()
+	b.subsLock.RUnlock()
 	if !ok {
 		return fmt.Errorf("subscription not found for original sub ID: %s", originalSubID)
 	}
 
-	b.mu.Lock()
+	b.subsLock.Lock()
 	delete(b.subsByOriginalID, originalSubID)
 	delete(b.subsByCurrentID, subscription.CurrentSubID())
-	b.mu.Unlock()
+	b.subsLock.Unlock()
 
 	return nil
 }
@@ -454,9 +564,9 @@ func (b *Bridge) handleResubscribeResponse(relay relayPkg.Relay, originalSubID s
 	}
 
 	// Clear pending resub from map
-	b.mu.Lock()
+	b.subsLock.Lock()
 	delete(b.pendingResubs, tempRelayID)
-	b.mu.Unlock()
+	b.subsLock.Unlock()
 
 	return nil
 }
@@ -467,19 +577,19 @@ func (b *Bridge) updateSubscription(relay relayPkg.Relay, originalSubID subPkg.S
 		return fmt.Errorf("error unmarshalling subscription ID: %w", err)
 	}
 
-	b.mu.RLock()
+	b.subsLock.RLock()
 	subscription, ok := b.subsByOriginalID[originalSubID]
-	b.mu.RUnlock()
+	b.subsLock.RUnlock()
 	if !ok {
 		return fmt.Errorf("subscription not found for original sub ID: %s", originalSubID)
 	}
 
 	// Update current sub ID in current sub IDs map and remove original sub ID from map
-	b.mu.Lock()
+	b.subsLock.Lock()
 	subscription.SetCurrentSubID(newSubID)
 	b.subsByCurrentID[newSubID] = subscription
 	delete(b.subsByCurrentID, originalSubID)
-	b.mu.Unlock()
+	b.subsLock.Unlock()
 
 	return nil
 }

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/utils-go/logger"
 	relayPkg "github.com/pokt-foundation/wss-manager/relay"
@@ -33,21 +32,26 @@ type (
 	gatewayResp string
 )
 
-func newTestBridge(clientConn, gatewayConn wsConnection, gatewayURL string, log *logger.Logger) *Bridge {
+func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, log *logger.Logger) *Bridge {
 	return &Bridge{
-		id:               uuid.New().String(),
-		clientConn:       clientConn,
-		gatewayURL:       gatewayURL,
-		gatewayConn:      gatewayConn,
-		gatewayMsgChan:   make(chan wsMessage, 100_000),
-		doneChan:         make(chan struct{}),
+		clientConn:              clientConn,
+		gatewayConn:             gatewayConn,
+		gatewayURL:              gatewayURL,
+		maxReconnectionAttempts: 10,
+		gatewayMsgChan:          make(chan wsMessage, 100_000),
+		doneChan:                make(chan struct{}),
+		pausePingLoop:           make(chan struct{}),
+		resumePingLoop:          make(chan struct{}),
+		wsLock:                  sync.Mutex{},
+
 		subsByCurrentID:  make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		subsByOriginalID: make(map[subPkg.SubscriptionID]*subPkg.Subscription),
 		pendingSubs:      make(map[string]subPkg.PendingSubscribe),
 		pendingUnsubs:    make(map[string]subPkg.PendingUnsubscribe),
 		pendingResubs:    make(map[string]subPkg.SubscriptionID),
-		mu:               sync.RWMutex{},
-		log:              log,
+		subsLock:         sync.RWMutex{},
+
+		log: log,
 	}
 }
 
@@ -96,7 +100,7 @@ func Test_Bridge_Run(t *testing.T) {
 			clientConn := testClientWSConn(t, test.wsReqs)
 			gatewayConn, gatewayURL := testGatewayWSConn(t, test.wsReqs)
 
-			bridge := newTestBridge(clientConn, gatewayConn, gatewayURL, logger.New())
+			bridge := newTestBridge(clientConn.Conn, gatewayConn.Conn, gatewayURL, logger.New())
 
 			// Start the bridge
 			go bridge.Run()
