@@ -17,18 +17,20 @@ import (
 
 type (
 	wsRouter struct {
-		mux           *http.ServeMux
-		logger        *logger.Logger
-		gatewayDomain string
-		imageTag      string
+		mux            *http.ServeMux
+		logger         *logger.Logger
+		gatewayURLFunc GatewayURLFunc
+		imageTag       string
 	}
 
 	Config struct {
-		GatewayDomain string
-		ImageTag      string
-		Port          string
-		Logger        *logger.Logger
+		GatewayURLFunc GatewayURLFunc
+		ImageTag       string
+		Port           string
+		Logger         *logger.Logger
 	}
+
+	GatewayURLFunc func(chain types.ChainAlias, appID types.PortalAppID) string
 )
 
 // Start starts the API server on the specified port
@@ -66,10 +68,10 @@ func methodCheckMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // newAPIRouter creates a new APIRouter instance
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
-		mux:           http.NewServeMux(),
-		gatewayDomain: config.GatewayDomain,
-		imageTag:      config.ImageTag,
-		logger:        config.Logger,
+		mux:            http.NewServeMux(),
+		gatewayURLFunc: config.GatewayURLFunc,
+		imageTag:       config.ImageTag,
+		logger:         config.Logger,
 	}
 
 	// GET /healthz - handleHealthz returns a simple health check response
@@ -136,10 +138,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// create a new bridge, which includes creating a new gateway connection
-	// TODO - update gateway URL to use wss:// ?
-	gatewayURL := fmt.Sprintf("ws://%s.%s/v1/%s", chain, wr.gatewayDomain, appID)
-
-	bridge, err := bridge.NewBridge(clientWS, gatewayURL, wr.logger)
+	bridge, err := bridge.NewBridge(clientWS, wr.gatewayURLFunc(chain, appID), wr.logger)
 	if err != nil {
 		errString := fmt.Sprintf("error creating bridge: %s", err.Error())
 		wr.logger.Error(errString)
