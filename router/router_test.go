@@ -19,7 +19,6 @@ import (
 var capturedMessages struct {
 	sync.Mutex
 	clientRequests map[clientReq]struct{}
-	// gatewayResponses map[gatewayResp]struct{}
 }
 
 type (
