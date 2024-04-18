@@ -103,15 +103,13 @@ func NewBridge(config Config) (*Bridge, error) {
 // Run starts the bridge and establishes a bidirectional communication between the client and server
 func (b *Bridge) Run() {
 	// Start goroutine to read from client and write to gateway
-	go b.clientReadWriteLoop()
+	go b.clientLoop()
+	go b.clientPingLoop()
 
 	// Start goroutine to read from gateway and write to client
 	// This is also where the gateway reconnection logic is implemented
-	go b.gatewayReadWriteLoop()
-
-	// Start goroutines to run keep-alive pings for both client and gateway
-	go b.pingLoop(b.clientConn, nil, nil) // client ping loop is never paused
-	go b.pingLoop(b.gatewayConn, b.pausePingLoop, b.resumePingLoop)
+	go b.gatewayLoop()
+	go b.gatewayPingLoop()
 
 	b.log.Info("bridge operation started successfully")
 
@@ -164,8 +162,8 @@ func (b *Bridge) closeBridge(errStr string, err error) {
 
 /* ---------- Private methods - WebSocket loop methods ---------- */
 
-// clientReadWriteLoop reads from the client connection and writes to the gateway connection
-func (b *Bridge) clientReadWriteLoop() {
+// clientLoop reads from the client connection and writes to the gateway connection
+func (b *Bridge) clientLoop() {
 	for {
 		select {
 		case <-b.stopChan:
@@ -211,7 +209,7 @@ func (b *Bridge) clientReadWriteLoop() {
 
 // gatewayReadLoop reads from the gateway connection and writes to the gatewayMsgChan
 // This is also where the gateway reconnection logic is implemented
-func (b *Bridge) gatewayReadWriteLoop() {
+func (b *Bridge) gatewayLoop() {
 	for {
 		select {
 		case <-b.stopChan:
@@ -224,9 +222,7 @@ func (b *Bridge) gatewayReadWriteLoop() {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
 					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect")
 
-					b.pausePingLoop <- struct{}{}
 					if reconnectErr := b.reconnectToGateway(); reconnectErr == nil {
-						b.resumePingLoop <- struct{}{}
 						continue // Resume gateway read loop if reconnection was successful
 					}
 
@@ -271,20 +267,20 @@ func (b *Bridge) gatewayReadWriteLoop() {
 	}
 }
 
-// pingLoop sends keep-alive ping messages to the connection and handles pong messages
-func (b *Bridge) pingLoop(conn *websocket.Conn, pauseChan, resumeChan chan struct{}) {
+// clientPingLoop sends keep-alive ping messages to the connection and handles pong messages
+func (b *Bridge) clientPingLoop() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
 	}()
 
 	// Set initial read deadline
-	if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+	if err := b.clientConn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
 		b.log.Error("failed to set initial read deadline:", slog.String("error", err.Error()))
 	}
 	// Extend read deadline on pong response
-	conn.SetPongHandler(func(string) error {
-		if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+	b.clientConn.SetPongHandler(func(string) error {
+		if err := b.clientConn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
 			b.log.Error("failed to set pong handler read deadline:", slog.String("error", err.Error()))
 		}
 		return nil
@@ -301,30 +297,69 @@ func (b *Bridge) pingLoop(conn *websocket.Conn, pauseChan, resumeChan chan struc
 			if paused {
 				continue
 			}
-			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
-				b.closeBridge("failed to send ping", err)
+			b.wsLock.Lock()
+			if err := b.clientConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
+				b.wsLock.Unlock()
+				b.closeBridge("failed to send ping to client", err)
 				return
 			}
+			b.wsLock.Unlock()
+		}
+	}
+}
 
-		default:
-			if pauseChan != nil && resumeChan != nil {
-				select {
-				case <-pauseChan:
-					paused = true
+// gatewayPingLoop sends keep-alive ping messages to the connection and handles pong messages
+func (b *Bridge) gatewayPingLoop() {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+	}()
 
-				case <-resumeChan:
-					paused = false
-
-					// Reset read deadline when resuming ping loop
-					if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
-						b.log.Error("failed to reset read deadline when resuming ping loop:", slog.String("error", err.Error()))
-					}
-					ticker.Reset(pingPeriod)
-
-				default:
-					// This default case prevents blocking if neither pause nor resume channels are triggered
-				}
+	initPingLoop := func() {
+		b.wsLock.Lock()
+		// Set initial read deadline
+		if err := b.gatewayConn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+			b.log.Error("failed to set initial read deadline:", slog.String("error", err.Error()))
+		}
+		// Extend read deadline on pong response
+		b.gatewayConn.SetPongHandler(func(string) error {
+			if err := b.gatewayConn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+				b.log.Error("failed to set pong handler read deadline:", slog.String("error", err.Error()))
 			}
+
+			return nil
+		})
+		b.wsLock.Unlock()
+	}
+
+	initPingLoop()
+	paused := false
+
+	for {
+		select {
+		case <-b.stopChan:
+			return
+
+		case <-b.pausePingLoop:
+			paused = true
+
+		case <-b.resumePingLoop:
+			paused = false
+			initPingLoop()
+
+		case <-ticker.C:
+			if paused {
+				continue
+
+			}
+
+			b.wsLock.Lock()
+			if err := b.gatewayConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
+				b.wsLock.Unlock()
+				b.closeBridge("failed to send ping to gateway", err)
+				return
+			}
+			b.wsLock.Unlock()
 		}
 	}
 }
@@ -502,7 +537,7 @@ func (b *Bridge) handleSubscriptionEvent(params relayPkg.SubscriptionEventParams
 	}
 	relay.Params = json.RawMessage(jsonParams)
 
-	if relay.ID.String() == "" {
+	if relay.ID != nil && relay.ID.String() == "" {
 		relay.ID = nil
 	}
 

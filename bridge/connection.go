@@ -54,9 +54,11 @@ func (b *Bridge) connectGateway() (*websocket.Conn, error) {
 func (b *Bridge) reconnectToGateway() error {
 	var backoffInterval = 500 * time.Millisecond // Initial backoff interval
 
+	b.pausePingLoop <- struct{}{}
+
 	for attempt := 1; attempt <= b.maxReconnectionAttempts; attempt++ {
 		b.log.Info("attempting to reconnect to gateway", slog.Int("attempt", attempt))
-		gatewayWS, err := b.connectGateway()
+		gatewayConn, err := b.connectGateway()
 		if err != nil {
 			b.log.Error("failed to reconnect to gateway", slog.String("error", err.Error()), slog.Int("attempt", attempt))
 
@@ -77,11 +79,16 @@ func (b *Bridge) reconnectToGateway() error {
 			continue
 		}
 
-		b.gatewayConn = gatewayWS
+		b.wsLock.Lock()
+		b.gatewayConn = gatewayConn
+		b.wsLock.Unlock()
+
 		b.log.Info("Successfully reconnected to gateway")
 
 		b.log.Info("resuming subscriptions")
 		b.resumeSubscriptions()
+
+		b.resumePingLoop <- struct{}{}
 
 		return nil
 	}
