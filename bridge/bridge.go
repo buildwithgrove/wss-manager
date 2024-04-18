@@ -113,7 +113,7 @@ func (b *Bridge) Run() {
 	go b.pingLoop(b.clientConn, nil, nil) // client ping loop is never paused
 	go b.pingLoop(b.gatewayConn, b.pausePingLoop, b.resumePingLoop)
 
-	b.log.Info("Bridge operation started successfully")
+	b.log.Info("bridge operation started successfully")
 
 	// If close signal is received, stop the bridge and close both connections
 	stopErr := <-b.stopChan
@@ -132,18 +132,26 @@ func (b *Bridge) cleanup(err error) error {
 	closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, err.Error())
 
 	// Close the client connection with the gateway and send a reason for the closure
-	_ = b.clientConn.WriteMessage(websocket.CloseMessage, closeMsg)
-	_ = b.clientConn.Close()
+	if err := b.clientConn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
+		b.log.Error("error writing close message to client connection:", slog.String("error", err.Error()))
+	}
+	if err := b.clientConn.Close(); err != nil {
+		b.log.Error("error closing client connection:", slog.String("error", err.Error()))
+	}
 
 	// Close the gateway connection with the client and send a reason for the closure
-	_ = b.gatewayConn.WriteMessage(websocket.CloseMessage, closeMsg)
-	_ = b.gatewayConn.Close()
+	if err := b.gatewayConn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
+		b.log.Error("error writing close message to gateway connection:", slog.String("error", err.Error()))
+	}
+	if err := b.gatewayConn.Close(); err != nil {
+		b.log.Error("error closing gateway connection:", slog.String("error", err.Error()))
+	}
 
-	b.log.Info("Bridge operation stopped successfully")
+	b.log.Info("bridge operation stopped successfully")
 	return nil
 }
 
-// closeBridge logs the error and closes the stopChan to stop the bridge
+// closeBridge logs the error and sends it to the stopChan to stop the bridge
 func (b *Bridge) closeBridge(errStr string, err error) {
 	b.wsLock.Lock()
 	defer b.wsLock.Unlock()
@@ -344,7 +352,7 @@ func (b *Bridge) processClientRequest(message []byte) ([]byte, error) {
 }
 
 func (b *Bridge) handleSubscribeRequest(relay relayPkg.Relay, requestBody []byte) ([]byte, error) {
-	b.log.Info("Received eth_subscribe request from client")
+	b.log.Info("received eth_subscribe request from client")
 
 	// Generate a temporary relay ID for the pending subscribe request
 	tempRelayID := uuid.New().String()
@@ -371,7 +379,7 @@ func (b *Bridge) handleSubscribeRequest(relay relayPkg.Relay, requestBody []byte
 }
 
 func (b *Bridge) handleUnsubscribeRequest(relay relayPkg.Relay) ([]byte, error) {
-	b.log.Info("Received eth_unsubscribe request from client")
+	b.log.Info("received eth_unsubscribe request from client")
 
 	var params []string
 	if err := json.Unmarshal(relay.Params, &params); err != nil {
