@@ -241,7 +241,7 @@ func (b *Bridge) gatewayReadWriteLoop() {
 			// Check if the message is a subscription event or a response to a pending subscribe or unsubscribe request
 			processedMsg, err := b.processGatewayResponse(message)
 			if err != nil {
-				b.log.Error("error processing gateway request:", slog.String("error", err.Error()))
+				b.log.Error("error processing gateway response:", slog.String("error", err.Error()))
 				continue
 			}
 
@@ -440,6 +440,7 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 			b.subsLock.RUnlock()
 			return b.handleSubscribeResponse(relay, pendingSub, tempRelayID)
 		}
+		b.subsLock.RUnlock()
 
 		// If response is a unsubscription confirmation remove the subscription from the subscriptions map
 		b.subsLock.RLock()
@@ -447,6 +448,7 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 			b.subsLock.RUnlock()
 			return b.handleUnsubscribeResponse(relay, pendingUnsub, tempRelayID)
 		}
+		b.subsLock.RUnlock()
 
 		// If response is a resubscribe confirmation update the current sub ID
 		b.subsLock.RLock()
@@ -457,6 +459,7 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 				return nil, fmt.Errorf("error handling resubscribe response: %w", err)
 			}
 		}
+		b.subsLock.RUnlock()
 	}
 
 	// If none of the above return the unmodified message
@@ -504,8 +507,10 @@ func (b *Bridge) handleSubscriptionEvent(params relayPkg.SubscriptionEventParams
 func (b *Bridge) handleSubscribeResponse(relay relayPkg.Relay, pendingSub subPkg.PendingSubscribe, tempRelayID string) ([]byte, error) {
 	b.log.Info("received eth_subscribe confirmation from gateway")
 
-	if err := b.addSubscription(relay, pendingSub.RequestBody); err != nil {
-		return nil, fmt.Errorf("error adding subscription: %w", err)
+	if !relay.IsError() {
+		if err := b.addSubscription(relay, pendingSub.RequestBody); err != nil {
+			return nil, fmt.Errorf("error adding subscription: %w", err)
+		}
 	}
 
 	// Replace original relay ID before returning response to client
@@ -543,14 +548,16 @@ func (b *Bridge) addSubscription(relay relayPkg.Relay, requestBody []byte) error
 func (b *Bridge) handleUnsubscribeResponse(relay relayPkg.Relay, pendingUnsub subPkg.PendingUnsubscribe, tempRelayID string) ([]byte, error) {
 	b.log.Info("received eth_unsubscribe confirmation from gateway")
 
-	// If the unsubscribe was successful the result field will be 'true'
-	var unsubConfirmation bool
-	if err := json.Unmarshal(relay.Result, &unsubConfirmation); err != nil {
-		return nil, fmt.Errorf("error unmarshalling unsubscribe confirmation: %w", err)
-	}
-	if unsubConfirmation {
-		if err := b.removeSubscription(pendingUnsub.OriginalSubID); err != nil {
-			return nil, fmt.Errorf("error removing subscription: %w", err)
+	if !relay.IsError() {
+		// If the unsubscribe was successful the result field will be 'true'
+		var unsubConfirmation bool
+		if err := json.Unmarshal(relay.Result, &unsubConfirmation); err != nil {
+			return nil, fmt.Errorf("error unmarshalling unsubscribe confirmation: %w", err)
+		}
+		if unsubConfirmation {
+			if err := b.removeSubscription(pendingUnsub.OriginalSubID); err != nil {
+				return nil, fmt.Errorf("error removing subscription: %w", err)
+			}
 		}
 	}
 

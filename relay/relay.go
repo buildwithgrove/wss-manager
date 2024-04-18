@@ -12,6 +12,12 @@ type (
 		Method  string          `json:"method,omitempty"`
 		Result  json.RawMessage `json:"result,omitempty"`
 		Params  json.RawMessage `json:"params,omitempty"`
+		Error   *RelayError     `json:"error,omitempty"`
+	}
+
+	RelayError struct {
+		Code    int    `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
 	}
 
 	SubscriptionEventParams struct {
@@ -26,6 +32,10 @@ type (
 		isNumber bool
 	}
 )
+
+func (r *Relay) IsError() bool {
+	return r.Error != nil
+}
 
 func IDFromString(id string) *ID {
 	return &ID{string: id, isNumber: false}
