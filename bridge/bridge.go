@@ -466,6 +466,8 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("error handling resubscribe response: %w", err)
 			}
+			// If resubscribe response is successful return nil to signal to handler not to send response to client
+			return nil, nil
 		}
 		b.subsLock.RUnlock()
 	}
