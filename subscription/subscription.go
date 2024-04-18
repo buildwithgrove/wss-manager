@@ -11,12 +11,12 @@ type (
 	}
 
 	PendingSubscribe struct {
-		OriginalRelayID relayPkg.ID
+		OriginalRelayID *relayPkg.ID
 		RequestBody     []byte
 	}
 
 	PendingUnsubscribe struct {
-		OriginalRelayID relayPkg.ID
+		OriginalRelayID *relayPkg.ID
 		OriginalSubID   SubscriptionID
 	}
 

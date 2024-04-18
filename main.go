@@ -16,12 +16,12 @@ const (
 
 	// Optional env variables
 	maxReconnectionAttempts        = "MAX_RECONNECTION_ATTEMPTS"
+	defaultMaxReconnectionAttempts = 100
 	useWSS                         = "USE_WSS"
-	port                           = "PORT"
-	imageTag                       = "IMAGE_TAG"
-	defaultMaxReconnectionAttempts = 10
 	defaultUseWSS                  = false
+	port                           = "PORT"
 	defaultPort                    = "8080"
+	imageTag                       = "IMAGE_TAG"
 	defaultImageTag                = "development"
 
 	// eg. wss://eth-mainnet.rpc.grove.city/v1/1a2b3c4d

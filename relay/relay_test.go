@@ -10,17 +10,17 @@ func TestID_IDFromString(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    string
-		expected ID
+		expected *ID
 	}{
 		{
 			name:     "should create ID from string",
 			input:    "abc123",
-			expected: ID{string: "abc123", isNumber: false},
+			expected: &ID{string: "abc123", isNumber: false},
 		},
 		{
 			name:     "should handle empty string",
 			input:    "",
-			expected: ID{string: "", isNumber: false},
+			expected: &ID{string: "", isNumber: false},
 		},
 	}
 
@@ -36,17 +36,17 @@ func TestID_IDFromInt(t *testing.T) {
 	tests := []struct {
 		name     string
 		input    int
-		expected ID
+		expected *ID
 	}{
 		{
 			name:     "should create ID from int",
 			input:    123,
-			expected: ID{number: 123, isNumber: true},
+			expected: &ID{number: 123, isNumber: true},
 		},
 		{
 			name:     "should handle zero value",
 			input:    0,
-			expected: ID{number: 0, isNumber: true},
+			expected: &ID{number: 0, isNumber: true},
 		},
 	}
 
@@ -61,17 +61,17 @@ func TestID_IDFromInt(t *testing.T) {
 func TestID_String(t *testing.T) {
 	tests := []struct {
 		name     string
-		id       ID
+		id       *ID
 		expected string
 	}{
 		{
 			name:     "should return string for string ID",
-			id:       ID{string: "abc123", isNumber: false},
+			id:       &ID{string: "abc123", isNumber: false},
 			expected: "abc123",
 		},
 		{
 			name:     "should return empty string for number ID",
-			id:       ID{number: 123, isNumber: true},
+			id:       &ID{number: 123, isNumber: true},
 			expected: "",
 		},
 	}
@@ -127,23 +127,23 @@ func TestID_UnmarshalJSON(t *testing.T) {
 func TestID_MarshalJSON(t *testing.T) {
 	tests := []struct {
 		name        string
-		id          ID
+		id          *ID
 		expected    []byte
 		expectError bool
 	}{
 		{
 			name:     "should marshal string ID",
-			id:       ID{string: "abc123", isNumber: false},
+			id:       &ID{string: "abc123", isNumber: false},
 			expected: []byte(`"abc123"`),
 		},
 		{
 			name:     "should marshal integer ID",
-			id:       ID{number: 123, isNumber: true},
+			id:       &ID{number: 123, isNumber: true},
 			expected: []byte(`123`),
 		},
 		{
 			name:     "should marshal nil for empty ID",
-			id:       ID{},
+			id:       &ID{},
 			expected: []byte(`null`),
 		},
 	}

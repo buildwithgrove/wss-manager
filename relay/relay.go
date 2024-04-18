@@ -7,23 +7,11 @@ import (
 
 type (
 	Relay struct {
-		ID      ID              `json:"id"`
+		ID      *ID             `json:"id,omitempty"`
 		JSONRPC string          `json:"jsonrpc"`
 		Method  string          `json:"method,omitempty"`
 		Result  json.RawMessage `json:"result,omitempty"`
 		Params  json.RawMessage `json:"params,omitempty"`
-	}
-
-	RelayResponse struct {
-		ID      ID                 `json:"id"`
-		JSONRPC string             `json:"jsonrpc"`
-		Result  json.RawMessage    `json:"result,omitempty"`
-		Error   RelayErrorResponse `json:"error,omitempty"`
-	}
-
-	RelayErrorResponse struct {
-		Code    int    `json:"code,omitempty"`
-		Message string `json:"message,omitempty"`
 	}
 
 	SubscriptionEventParams struct {
@@ -39,15 +27,15 @@ type (
 	}
 )
 
-func IDFromString(id string) ID {
-	return ID{string: id, isNumber: false}
+func IDFromString(id string) *ID {
+	return &ID{string: id, isNumber: false}
 }
 
-func IDFromInt(id int) ID {
-	return ID{number: id, isNumber: true}
+func IDFromInt(id int) *ID {
+	return &ID{number: id, isNumber: true}
 }
 
-func (i ID) String() string {
+func (i *ID) String() string {
 	if i.isNumber {
 		return ""
 	}
@@ -71,7 +59,7 @@ func (i *ID) UnmarshalJSON(data []byte) error {
 	return fmt.Errorf("error unmarshalling ID: %s", string(data))
 }
 
-func (i ID) MarshalJSON() ([]byte, error) {
+func (i *ID) MarshalJSON() ([]byte, error) {
 	if i.isNumber {
 		return json.Marshal(i.number)
 	} else if i.string != "" {
