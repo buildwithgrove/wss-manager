@@ -286,17 +286,12 @@ func (b *Bridge) clientPingLoop() {
 		return nil
 	})
 
-	paused := false
-
 	for {
 		select {
 		case <-b.stopChan:
 			return
 
 		case <-ticker.C:
-			if paused {
-				continue
-			}
 			b.wsLock.Lock()
 			if err := b.clientConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
 				b.wsLock.Unlock()
