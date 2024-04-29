@@ -1,7 +1,15 @@
 FROM golang:1.22-alpine AS builder
 RUN apk add --no-cache git
-WORKDIR /go/src/github.com/pokt-foundation
 
+ARG GITHUB_TOKEN
+
+ENV GOPRIVATE="github.com/pokt-foundation/*"
+
+ENV GITHUB_TOKEN=$GITHUB_TOKEN
+
+RUN git config --global url."https://${GITHUB_TOKEN}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+
+WORKDIR /go/src/github.com/pokt-foundation
 COPY . /go/src/github.com/pokt-foundation/wss-manager
 
 WORKDIR /go/src/github.com/pokt-foundation/wss-manager

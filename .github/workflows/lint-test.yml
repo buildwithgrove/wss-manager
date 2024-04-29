@@ -29,6 +29,10 @@ jobs:
         with:
           go-version: 1.22
 
+      - name: Setup Git Authentication
+        run: |
+          git config --global url."https://${{ secrets.POKT_BOT_GITHUB_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+
       - name: Cache Go and pre-commit data
         uses: actions/cache@v3
         with:
