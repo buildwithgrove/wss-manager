@@ -14,6 +14,18 @@ type (
 		Params  json.RawMessage `json:"params,omitempty"`
 	}
 
+	RelayResponse struct {
+		ID      ID                 `json:"id"`
+		JSONRPC string             `json:"jsonrpc"`
+		Result  json.RawMessage    `json:"result,omitempty"`
+		Error   RelayErrorResponse `json:"error,omitempty"`
+	}
+
+	RelayErrorResponse struct {
+		Code    int    `json:"code,omitempty"`
+		Message string `json:"message,omitempty"`
+	}
+
 	SubscriptionEventParams struct {
 		Result       json.RawMessage `json:"result"`
 		Subscription string          `json:"subscription"`
