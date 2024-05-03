@@ -4,19 +4,23 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/environment"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-manager/router"
 )
 
 const (
-	// TODO - this will change when routing requests to the gateway
 	gatewayDomain = "GATEWAY_DOMAIN"
 	port          = "PORT"
 	imageTag      = "IMAGE_TAG"
 
 	defaultPort     = "8080"
 	defaultImageTag = "development"
+
+	// eg. wss://eth-mainnet.rpc.grove.city/v1/1a2b3c4d
+	// TODO - update gateway URL to use wss:// ?
+	gatewayURLTemplate = "ws://%s.%s/v1/%s"
 )
 
 type options struct {
@@ -38,11 +42,15 @@ func main() {
 
 	logger := logger.New()
 
+	gatewayURLFunc := func(chain types.ChainAlias, appID types.PortalAppID) string {
+		return fmt.Sprintf(gatewayURLTemplate, chain, options.gatewayDomain, appID)
+	}
+
 	err := router.Start(context.Background(), router.Config{
-		GatewayDomain: options.gatewayDomain,
-		Port:          options.port,
-		ImageTag:      options.imageTag,
-		Logger:        logger,
+		GatewayURLFunc: gatewayURLFunc,
+		Port:           options.port,
+		ImageTag:       options.imageTag,
+		Logger:         logger,
 	})
 	if err != nil {
 		logger.Error(fmt.Sprintf("create API router failed with error: %s", err.Error()))
