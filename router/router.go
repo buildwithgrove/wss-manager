@@ -21,12 +21,14 @@ type (
 		logger                  *logger.Logger
 		gatewayURLFunc          GatewayURLFunc
 		maxReconnectionAttempts int
+		wsAuthKey               string
 		imageTag                string
 	}
 
 	Config struct {
 		GatewayURLFunc          GatewayURLFunc
 		MaxReconnectionAttempts int
+		WSAuthKey               string
 		ImageTag                string
 		Port                    string
 		Logger                  *logger.Logger
@@ -73,6 +75,7 @@ func newAPIRouter(config Config) *wsRouter {
 		mux:                     http.NewServeMux(),
 		gatewayURLFunc:          config.GatewayURLFunc,
 		maxReconnectionAttempts: config.MaxReconnectionAttempts,
+		wsAuthKey:               config.WSAuthKey,
 		imageTag:                config.ImageTag,
 		logger:                  config.Logger,
 	}
@@ -144,6 +147,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	bridge, err := bridge.NewBridge(bridge.Config{
 		ClientConn:              clientConn,
 		GatewayURL:              wr.gatewayURLFunc(chain, appID),
+		WSAuthKey:               wr.wsAuthKey,
 		MaxReconnectionAttempts: wr.maxReconnectionAttempts,
 		Log:                     wr.logger,
 	})
