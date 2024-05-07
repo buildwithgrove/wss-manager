@@ -4,19 +4,18 @@ import relayPkg "github.com/pokt-foundation/wss-manager/relay"
 
 type (
 	Subscription struct {
-		requestBody []byte
-
 		originalSubID SubscriptionID
 		currentSubID  SubscriptionID
+		requestBody   []byte
 	}
 
 	PendingSubscribe struct {
-		OriginalRelayID relayPkg.ID
+		OriginalRelayID *relayPkg.ID
 		RequestBody     []byte
 	}
 
 	PendingUnsubscribe struct {
-		OriginalRelayID relayPkg.ID
+		OriginalRelayID *relayPkg.ID
 		OriginalSubID   SubscriptionID
 	}
 

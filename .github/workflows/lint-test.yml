@@ -29,6 +29,10 @@ jobs:
         with:
           go-version: 1.22
 
+      - name: Setup Git Authentication
+        run: |
+          git config --global url."https://${{ secrets.POKT_BOT_GITHUB_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
+
       - name: Install Go tools
         run: |
             PATH="$(go env GOPATH)/bin:$PATH"

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-manager/bridge"
@@ -114,7 +115,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	if appID == "" {
 		errString := "app must be present"
 		wr.logger.Error(errString)
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
+		wr.writeHandshakeErrorResponse(w, http.StatusBadRequest, errString)
 		return
 	}
 
@@ -124,7 +125,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	if chain == "" {
 		errString := "chain must be present"
 		wr.logger.Error(errString)
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
+		wr.writeHandshakeErrorResponse(w, http.StatusBadRequest, errString)
 		return
 	}
 
@@ -132,27 +133,31 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool { return true }, // allow all origins
 	}
-	clientWS, err := upgrader.Upgrade(w, req, nil)
+	clientConn, err := upgrader.Upgrade(w, req, nil)
 	if err != nil {
 		errString := fmt.Sprintf("error upgrading connection: %s", err.Error())
 		wr.logger.Error(errString)
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
+		wr.writeHandshakeErrorResponse(w, http.StatusBadRequest, errString)
 		return
 	}
 
 	// create a new bridge, which includes creating a new gateway connection
 	bridge, err := bridge.NewBridge(bridge.Config{
-		ClientConn:              clientWS,
+		ClientConn:              clientConn,
 		GatewayURL:              wr.gatewayURLFunc(chain, appID),
 		MaxReconnectionAttempts: wr.maxReconnectionAttempts,
 		Log:                     wr.logger,
 	})
 	if err != nil {
-		errString := fmt.Sprintf("error creating bridge: %s", err.Error())
-		wr.logger.Error(errString)
-		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
+		wr.logger.Error(fmt.Sprintf("error creating bridge: %s", err.Error()))
 
-		clientWS.Close()
+		// if gateway connection fails, close the connection with the client and send the reason for the closure
+		closeMsg := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error())
+		if writeErr := clientConn.WriteMessage(websocket.CloseMessage, closeMsg); writeErr != nil {
+			wr.logger.Error(fmt.Sprintf("error writing close message to client: %s", writeErr.Error()))
+		}
+		clientConn.Close()
+
 		return
 	}
 
@@ -160,25 +165,15 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	go bridge.Run()
 }
 
-// writeRequestProcessingError writes a request processing error response to the client in the JSON-RPC expected format
-func (wr *wsRouter) writeRequestProcessingError(w http.ResponseWriter, relayID relay.ID, message string) {
-	bytes, err := json.Marshal(relay.RelayResponse{
-		JSONRPC: "2.0",
-		ID:      relayID,
-		Error: relay.RelayErrorResponse{
-			Code:    -32603,
-			Message: fmt.Sprintf("error processing the request: %s", message),
-		},
-	})
-	if err != nil {
-		wr.logger.Error("error marshalling request processing error response", slog.String("error", err.Error()))
-	}
+// writeHandshakeErrorResponse writes a standard HTTP error response to the client.
+func (wr *wsRouter) writeHandshakeErrorResponse(w http.ResponseWriter, statusCode int, message string) {
+	wr.logger.Error("HTTP error response sent to client", slog.String("error", message))
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK) // gateway should not return 50x/40x errors: always 200 as per JSON-RPC expected behavior
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(statusCode)
 
-	_, err = w.Write(bytes)
+	_, err := w.Write([]byte(message))
 	if err != nil {
-		wr.logger.Error("error writing request processing error response", slog.String("error", err.Error()))
+		wr.logger.Error("error writing HTTP error response to client", slog.String("error", err.Error()))
 	}
 }
