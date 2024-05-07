@@ -11,7 +11,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+
 	relayPkg "github.com/pokt-foundation/wss-manager/relay"
+)
+
+const (
+	backoffFactor = 2                // Factor by which the interval increases
+	maxBackoff    = 10 * time.Second // Maximum backoff interval
 )
 
 // connectGateway connects to the gateway and returns the websocket connection.
@@ -46,20 +52,16 @@ func (b *Bridge) connectGateway() (*websocket.Conn, error) {
 
 // reconnectToGateway reconnects to the gateway in case of connection drop with incremental backoff.
 func (b *Bridge) reconnectToGateway() error {
-	// TODO - configure in env vars
-	maxAttempts := 10
-	backoffInterval := 250 * time.Millisecond // Initial backoff interval
-	const backoffFactor = 2                   // Factor by which the interval increases
-	const maxBackoff = 10 * time.Second       // Maximum backoff interval
+	var backoffInterval = 500 * time.Millisecond // Initial backoff interval
 
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	for attempt := 1; attempt <= b.maxReconnectionAttempts; attempt++ {
 		b.log.Info("attempting to reconnect to gateway", slog.Int("attempt", attempt))
 		gatewayWS, err := b.connectGateway()
 		if err != nil {
 			b.log.Error("failed to reconnect to gateway", slog.String("error", err.Error()), slog.Int("attempt", attempt))
 
-			if attempt == maxAttempts {
-				b.log.Error("max reconnect attempts reached", slog.Int("maxAttempts", maxAttempts))
+			if attempt == b.maxReconnectionAttempts {
+				b.log.Error("max reconnect attempts reached", slog.Int("maxReconnectionAttempts", b.maxReconnectionAttempts))
 				return err
 			}
 
@@ -84,18 +86,19 @@ func (b *Bridge) reconnectToGateway() error {
 		return nil
 	}
 
-	return fmt.Errorf("failed to reconnect to gateway after %d attempts", maxAttempts)
+	return fmt.Errorf("failed to reconnect to gateway after %d attempts", b.maxReconnectionAttempts)
 }
 
 func (b *Bridge) resumeSubscriptions() {
+	b.subsLock.Lock()
+	defer b.subsLock.Unlock()
+
 	for _, sub := range b.subsByCurrentID {
 		// Generate a temporary relay ID for the pending resubscribe request
 		tempRelayID := uuid.New().String()
 
 		// Store the original subscription ID with the temporary relay ID in the pending resubs map
-		b.mu.Lock()
 		b.pendingResubs[tempRelayID] = sub.OriginalSubID()
-		b.mu.Unlock()
 
 		var relay relayPkg.Relay
 		if err := json.Unmarshal(sub.RequestBody(), &relay); err != nil {

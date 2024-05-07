@@ -17,17 +17,19 @@ import (
 
 type (
 	wsRouter struct {
-		mux            *http.ServeMux
-		logger         *logger.Logger
-		gatewayURLFunc GatewayURLFunc
-		imageTag       string
+		mux                     *http.ServeMux
+		logger                  *logger.Logger
+		gatewayURLFunc          GatewayURLFunc
+		maxReconnectionAttempts int
+		imageTag                string
 	}
 
 	Config struct {
-		GatewayURLFunc GatewayURLFunc
-		ImageTag       string
-		Port           string
-		Logger         *logger.Logger
+		GatewayURLFunc          GatewayURLFunc
+		MaxReconnectionAttempts int
+		ImageTag                string
+		Port                    string
+		Logger                  *logger.Logger
 	}
 
 	GatewayURLFunc func(chain types.ChainAlias, appID types.PortalAppID) string
@@ -68,10 +70,11 @@ func methodCheckMiddleware(next http.HandlerFunc) http.HandlerFunc {
 // newAPIRouter creates a new APIRouter instance
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
-		mux:            http.NewServeMux(),
-		gatewayURLFunc: config.GatewayURLFunc,
-		imageTag:       config.ImageTag,
-		logger:         config.Logger,
+		mux:                     http.NewServeMux(),
+		gatewayURLFunc:          config.GatewayURLFunc,
+		maxReconnectionAttempts: config.MaxReconnectionAttempts,
+		imageTag:                config.ImageTag,
+		logger:                  config.Logger,
 	}
 
 	// GET /healthz - handleHealthz returns a simple health check response
@@ -138,11 +141,18 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	}
 
 	// create a new bridge, which includes creating a new gateway connection
-	bridge, err := bridge.NewBridge(clientWS, wr.gatewayURLFunc(chain, appID), wr.logger)
+	bridge, err := bridge.NewBridge(bridge.Config{
+		ClientConn:              clientWS,
+		GatewayURL:              wr.gatewayURLFunc(chain, appID),
+		MaxReconnectionAttempts: wr.maxReconnectionAttempts,
+		Log:                     wr.logger,
+	})
 	if err != nil {
 		errString := fmt.Sprintf("error creating bridge: %s", err.Error())
 		wr.logger.Error(errString)
 		wr.writeRequestProcessingError(w, relay.IDFromString("0"), errString)
+
+		clientWS.Close()
 		return
 	}
 
