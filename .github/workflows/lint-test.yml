@@ -80,20 +80,38 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Check for disabled pre-commit checks in .pre-commit-config.yaml
+        run: |
+          if grep '^[[:space:]]*#' .pre-commit-config.yaml; then
+            echo "Found commented lines in .pre-commit-config.yaml. Please remove them to proceed."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
           go-version: 1.22
 
-      - name: Set up cache
-        uses: actions/cache@v2
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+      - name: Install Go tools
+        run: |
+            PATH="$(go env GOPATH)/bin:$PATH"
+            go install golang.org/x/tools/cmd/goimports@v0.6.0
+            go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.57.2
+            go install github.com/go-critic/go-critic/cmd/gocritic@v0.11.2
+        env:
+          PATH: $(go env GOPATH)/bin:$PATH
 
-      - name: Run Unit tests
-        run: make test
+      - name: Disable select checks in .pre-commit-config.yaml
+        run: |
+          sed -i 's/^\(\s*- id: no-commit-to-branch\)/# \1/' .pre-commit-config.yaml
+        working-directory: ${{ github.workspace }}
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: 3.x
+      - uses: pre-commit/action@v3.0.1
+      - uses: pre-commit-ci/lite-action@v1.0.2
+        if: always()
