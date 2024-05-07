@@ -1,6 +1,7 @@
 package router
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
+	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/stretchr/testify/require"
 )
@@ -120,12 +122,30 @@ func testGatewayWSConn(t *testing.T, wsReqs map[clientReq]gatewayResp) string {
 					return
 				}
 
+				var clientMsg websockets.ClientMessage
+				if err := json.Unmarshal(message, &clientMsg); err != nil {
+					t.Error("Error unmarshalling message:", err)
+					return
+				}
+
+				messageReq := clientReq(clientMsg.Message)
+
 				capturedMessages.Lock()
-				capturedMessages.clientRequests[clientReq(message)] = struct{}{}
+				capturedMessages.clientRequests[messageReq] = struct{}{}
 				capturedMessages.Unlock()
 
-				if response, ok := wsReqs[clientReq(message)]; ok {
-					if err := conn.WriteMessage(websocket.TextMessage, []byte(response)); err != nil {
+				if response, ok := wsReqs[messageReq]; ok {
+					gatewayMessage := websockets.GatewayMessage{
+						Message: []byte(response),
+					}
+
+					gatewayResponse, err := json.Marshal(gatewayMessage)
+					if err != nil {
+						t.Error("Error marshalling response:", err)
+						return
+					}
+
+					if err := conn.WriteMessage(websocket.TextMessage, []byte(gatewayResponse)); err != nil {
 						t.Error("Error sending response:", err)
 						return
 					}

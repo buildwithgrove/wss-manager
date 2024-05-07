@@ -9,6 +9,7 @@ replace github.com/pokt-network/smt => github.com/pokt-network/smt v0.9.3-0.2024
 require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/pokt-foundation/portal-http-db/v2 v2.15.0
+	// TODO: update portal-middleware to non-dev tag when Gateway PRs are reviewed and published
 	github.com/pokt-foundation/portal-middleware v0.0.1-dev
 	github.com/pokt-foundation/utils-go v0.11.1
 	github.com/stretchr/testify v1.9.0
