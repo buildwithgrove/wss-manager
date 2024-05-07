@@ -198,18 +198,7 @@ func (b *Bridge) clientLoop() {
 		default:
 			messageType, msg, err := b.clientConn.ReadMessage()
 			if err != nil {
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-					b.log.Info("client websocket closed") // don't log error when client closes
-					return
-				}
-
-				// If the error is not a close error it is net error; this handles the case where the
-				// client connection is closed due to the gateway reconnection failing
-				if _, ok := err.(*websocket.CloseError); !ok {
-					return
-				}
-
-				b.closeBridge("error reading from client websocket", err)
+				b.handleClientError(err)
 				return
 			}
 
@@ -224,13 +213,28 @@ func (b *Bridge) clientLoop() {
 			err = b.gatewayConn.WriteMessage(messageType, clientMsgBytes)
 			if err != nil {
 				b.wsLock.Unlock()
-
+				// An error writing means the connection is broken and the bridge should be stopped
 				b.closeBridge("error writing to gateway websocket", err)
 				return
 			}
 			b.wsLock.Unlock()
 		}
 	}
+}
+
+func (b *Bridge) handleClientError(err error) {
+	if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+		b.log.Info("client websocket closed") // don't log error when client closes
+		return
+	}
+
+	// If the error is not a close error it is net error; this handles the case where the
+	// client connection is closed due to the gateway reconnection failing
+	if _, ok := err.(*websocket.CloseError); !ok {
+		return
+	}
+
+	b.closeBridge("error reading from client websocket", err)
 }
 
 // gatewayReadLoop reads from the gateway connection and writes to the gatewayMsgChan
@@ -244,28 +248,11 @@ func (b *Bridge) gatewayLoop() {
 		default:
 			messageType, message, err := b.gatewayConn.ReadMessage()
 			if err != nil {
-				// If the gateway connection is closed, attempt to reconnect
-				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
-					b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect")
-
-					if reconnectErr := b.reconnectToGateway(); reconnectErr == nil {
-						continue // Resume gateway read loop if reconnection was successful
-					}
-
-					// If the gateway reconnection failed, stop the bridge operation
-					b.closeBridge("gateway connection lost", err)
+				if reconnectedToGateway := b.handleGatewayError(err); reconnectedToGateway {
+					continue // Resume gateway read loop if reconnection was successful
+				} else {
 					return
 				}
-
-				// If the error is not a close error it is net error; this handles the case where the
-				// gateway connection is closed in response to the client connection being closed
-				if _, ok := err.(*websocket.CloseError); !ok {
-					return
-				}
-
-				// If the gateway connection is closed, stop the bridge
-				b.closeBridge("error reading from gateway websocket", err)
-				return
 			}
 
 			// Check if the message is a subscription event or a response to a pending subscribe or unsubscribe request
@@ -284,13 +271,38 @@ func (b *Bridge) gatewayLoop() {
 			err = b.clientConn.WriteMessage(messageType, processedMsg)
 			if err != nil {
 				b.wsLock.Unlock()
-
+				// An error writing means the connection is broken and the bridge should be stopped
 				b.closeBridge("error writing to client websocket", err)
 				return
 			}
 			b.wsLock.Unlock()
 		}
 	}
+}
+
+func (b *Bridge) handleGatewayError(err error) bool {
+	// If the gateway connection is closed, attempt to reconnect
+	if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway) {
+		b.log.Info("gateway websocket closed unexpectedly, attempting to reconnect")
+
+		if reconnectErr := b.reconnectToGateway(); reconnectErr == nil {
+			return true // Resume gateway read loop if reconnection was successful
+		}
+
+		// If the gateway reconnection failed, stop the bridge operation
+		b.closeBridge("gateway connection lost", err)
+		return false
+	}
+
+	// If the error is not a close error it is net error; this handles the case where the
+	// gateway connection is closed in response to the client connection being closed
+	if _, ok := err.(*websocket.CloseError); !ok {
+		return false
+	}
+
+	// If the gateway connection is closed, stop the bridge
+	b.closeBridge("error reading from gateway websocket", err)
+	return false
 }
 
 // clientPingLoop sends keep-alive ping messages to the connection and handles pong messages
