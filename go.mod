@@ -2,9 +2,6 @@ module github.com/pokt-foundation/wss-manager
 
 go 1.22.0
 
-// TODO - remove when middleware published
-replace github.com/pokt-foundation/portal-middleware => ../portal-middleware
-
 replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 
 replace github.com/pokt-network/smt => github.com/pokt-network/smt v0.9.3-0.20240321060129-e3dbbbd9f97d
@@ -12,7 +9,7 @@ replace github.com/pokt-network/smt => github.com/pokt-network/smt v0.9.3-0.2024
 require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/pokt-foundation/portal-http-db/v2 v2.15.0
-	github.com/pokt-foundation/portal-middleware v0.0.236
+	github.com/pokt-foundation/portal-middleware v0.0.1-dev
 	github.com/pokt-foundation/utils-go v0.11.1
 	github.com/stretchr/testify v1.9.0
 )
