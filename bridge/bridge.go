@@ -15,6 +15,22 @@ import (
 	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
+	relayPkg "github.com/pokt-foundation/wss-manager/relay"
+	subPkg "github.com/pokt-foundation/wss-manager/subscription"
+)
+
+const (
+	ethSubscribe   = "eth_subscribe"
+	ethUnsubscribe = "eth_unsubscribe"
+
+	uuidLen = 36
+
+	// Time allowed to write a message to the peer.
+	writeWait = 10 * time.Second
+	// Time allowed to read the next pong message from the peer.
+	pongWait = 30 * time.Second
+	// Send pings to peer with this period. Must be less than pongWait.
+	pingPeriod = (pongWait * 9) / 10
 )
 
 const (
