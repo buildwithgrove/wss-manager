@@ -1,12 +1,10 @@
 package bridge
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"sync"
 	"time"
 
@@ -99,11 +97,13 @@ func NewBridge(config Config) (*Bridge, error) {
 func (b *Bridge) Run() {
 	// Start goroutine to read from client and write to gateway
 	go b.clientLoop()
-	go b.clientPingLoop()
 
 	// Start goroutine to read from gateway and write to client
 	// This is also where the gateway reconnection logic is implemented
 	go b.gatewayLoop()
+
+	// Start goroutines to ping/pong the client and gateway
+	go b.clientPingLoop()
 	go b.gatewayPingLoop()
 
 	b.log.Info("bridge operation started successfully")
@@ -118,31 +118,14 @@ func (b *Bridge) Run() {
 /* ---------- Private methods - Handle Config ---------- */
 
 // connectGateway connects to the gateway and returns the websocket connection.
-// It also handles authentication if the gateway requires it.
 func (b *Bridge) connectGateway() (*websocket.Conn, error) {
-	u, err := url.Parse(b.gatewayURL)
+	headers := http.Header{wsAuthHeader: []string{b.wsAuthKey}}
+
+	conn, _, err := websocket.DefaultDialer.Dial(b.gatewayURL, headers)
 	if err != nil {
 		return nil, err
 	}
 
-	h := http.Header{wsAuthHeader: []string{b.wsAuthKey}}
-
-	username := u.User.Username()
-	password, _ := u.User.Password()
-
-	if username != "" && password != "" {
-		encoded := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
-		// Encoded := username + ":" + password
-		h.Set("Authorization", "Basic "+encoded)
-	}
-
-	// Remove authentication information from URL
-	u.User = nil
-
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), h)
-	if err != nil {
-		return nil, err
-	}
 	return conn, nil
 }
 

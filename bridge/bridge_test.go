@@ -78,7 +78,7 @@ func Test_Bridge_Run(t *testing.T) {
 				ethSubNewHeadsBody: `{"jsonrpc":"2.0","id":1,"result":"0x62013741778a9ba131fec673e84f0916"}`,
 			},
 			subscription: map[clientReq]*websockets.Subscription{
-				ethSubNewHeadsBody: &websockets.Subscription{
+				ethSubNewHeadsBody: {
 					ID:          "0x62013741778a9ba131fec673e84f0916",
 					RequestBody: []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`),
 				},
@@ -128,7 +128,6 @@ func Test_Bridge_Run(t *testing.T) {
 			capturedMessages.gatewayResponses = make(map[gatewayResp]struct{})
 
 			clientConn := testClientWSConn(t, test.wsReqs)
-
 			gatewayConn, gatewayURL := testGatewayWSConn(t, test.wsReqs, test.subscription, test.unsubscription)
 
 			bridge := newTestBridge(clientConn.Conn, gatewayConn.Conn, gatewayURL, logger.New())
