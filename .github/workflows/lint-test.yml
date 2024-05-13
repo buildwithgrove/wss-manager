@@ -1,55 +1,64 @@
-name: Lint & Test
+name: Lint & Unit Test
 
 on:
   pull_request:
     branches:
       - main
-      - staging
 
 jobs:
-  pre-commit-checks:
-    name: Lint, Unit Test and Pre-commit Checks
+  golangci-lint:
+    name: Run golangci-lint
     runs-on: ubuntu-22.04
-
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Check for disabled pre-commit checks in .pre-commit-config.yaml
-        run: |
-          if grep '^[[:space:]]*#' .pre-commit-config.yaml; then
-            echo "Found commented lines in .pre-commit-config.yaml. Please remove them to proceed."
-            exit 1
-          fi
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - uses: actions/setup-go@v5
         with:
-          go-version: 1.22
+          go-version: '1.22.3'
 
-      - name: Setup Git Authentication
-        run: |
-          git config --global url."https://${{ secrets.POKT_BOT_GITHUB_TOKEN }}:x-oauth-basic@github.com/".insteadOf "https://github.com/"
-
-      - name: Install Go tools
-        run: |
-            PATH="$(go env GOPATH)/bin:$PATH"
-            go install golang.org/x/tools/cmd/goimports@v0.6.0
-            go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.57.2
-            go install github.com/go-critic/go-critic/cmd/gocritic@v0.11.2
-        env:
-          PATH: $(go env GOPATH)/bin:$PATH
-
-      - name: Disable select checks in .pre-commit-config.yaml
-        run: |
-          sed -i 's/^\(\s*- id: no-commit-to-branch\)/# \1/' .pre-commit-config.yaml
-        working-directory: ${{ github.workspace }}
-
-      - uses: actions/setup-python@v4
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
         with:
-          python-version: 3.x
-      - uses: pre-commit/action@v3.0.1
-      - uses: pre-commit-ci/lite-action@v1.0.2
-        if: always()
+          version: latest
+          args: --timeout 10m --verbose
+
+  gocritic:
+    name: Run gocritic
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.3'
+
+      - name: gocritic
+        run: |
+          go install github.com/go-critic/go-critic/cmd/gocritic@v0.11.2
+          gocritic check -disable=sloppyTypeAssert ./...
+
+  test:
+    name: Run unit tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.3'
+
+      - name: unit tests
+        run: CGO_ENABLED=0 go test ./... -short
+
+  test-docker-build:
+    name: Test build of Docker image
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: docker/build-push-action@v2
+        with:
+          build-args: |
+            IMAGE_TAG=test
+            GITHUB_TOKEN=${{ secrets.POKT_BOT_GITHUB_TOKEN }}
+          push: false
+          load: true
+          tags: test-build
