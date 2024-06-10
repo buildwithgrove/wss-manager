@@ -4,13 +4,11 @@ go 1.22.3
 
 replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 
-replace github.com/pokt-network/smt => github.com/pokt-network/smt v0.9.3-0.20240321060129-e3dbbbd9f97d
-
 require (
 	github.com/gorilla/websocket v1.5.1
-	github.com/pokt-foundation/portal-http-db/v2 v2.15.0
+	github.com/pokt-foundation/portal-http-db/v2 v2.15.6
 	// TODO: update portal-middleware to non-dev tag when Gateway PRs are reviewed and published
-	github.com/pokt-foundation/portal-middleware v0.0.4-dev
+	github.com/pokt-foundation/portal-middleware v0.0.6-dev
 	github.com/pokt-foundation/utils-go v0.11.1
 	github.com/stretchr/testify v1.9.0
 )
@@ -156,9 +154,9 @@ require (
 	github.com/petermattis/goid v0.0.0-20230904192822-1876fd5063bc // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/pokt-foundation/pocket-go v0.17.0 // indirect
-	github.com/pokt-network/poktroll v0.0.0-20240410170002-e690aaf64a5d // indirect
-	github.com/pokt-network/smt v0.9.2 // indirect
+	github.com/pokt-foundation/pocket-go v0.19.0 // indirect
+	github.com/pokt-network/poktroll v0.0.3-0.20240531080249-488c0d2502c5 // indirect
+	github.com/pokt-network/smt v0.10.2 // indirect
 	github.com/prometheus/client_golang v1.18.0 // indirect
 	github.com/prometheus/client_model v0.6.0 // indirect
 	github.com/prometheus/common v0.47.0 // indirect
@@ -191,13 +189,13 @@ require (
 	go.opentelemetry.io/otel/metric v1.22.0 // indirect
 	go.opentelemetry.io/otel/trace v1.22.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/crypto v0.19.0 // indirect
+	golang.org/x/crypto v0.21.0 // indirect
 	golang.org/x/exp v0.0.0-20240222234643-814bf88cf225 // indirect
-	golang.org/x/net v0.21.0 // indirect
+	golang.org/x/net v0.23.0 // indirect
 	golang.org/x/oauth2 v0.16.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
-	golang.org/x/sys v0.17.0 // indirect
-	golang.org/x/term v0.17.0 // indirect
+	golang.org/x/sys v0.18.0 // indirect
+	golang.org/x/term v0.18.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	google.golang.org/api v0.162.0 // indirect
@@ -206,7 +204,7 @@ require (
 	google.golang.org/genproto/googleapis/api v0.0.0-20240205150955-31a09d347014 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240221002015-b0ce06bbee7c // indirect
 	google.golang.org/grpc v1.62.0 // indirect
-	google.golang.org/protobuf v1.33.0 // indirect
+	google.golang.org/protobuf v1.34.1 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
