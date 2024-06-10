@@ -16,8 +16,6 @@ import (
 )
 
 const (
-	wsAuthHeader = "X-WS-Auth"
-
 	writeWait     = 10 * time.Second    // Time allowed to write a message to the peer.
 	pongWait      = 30 * time.Second    // Time allowed to read the next pong message from the peer.
 	pingPeriod    = (pongWait * 9) / 10 // Send pings to peer with this period. Must be less than pongWait.
@@ -119,7 +117,7 @@ func (b *Bridge) Run() {
 
 // connectGateway connects to the gateway and returns the websocket connection.
 func (b *Bridge) connectGateway() (*websocket.Conn, error) {
-	headers := http.Header{wsAuthHeader: []string{b.wsAuthKey}}
+	headers := http.Header{websockets.AuthHeader: []string{b.wsAuthKey}}
 
 	conn, _, err := websocket.DefaultDialer.Dial(b.gatewayURL, headers)
 	if err != nil {
