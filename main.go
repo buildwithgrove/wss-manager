@@ -13,6 +13,7 @@ import (
 const (
 	// Required env variables
 	gatewayDomain = "GATEWAY_DOMAIN"
+	wsAuthKey     = "WS_AUTH_KEY"
 
 	// Optional env variables
 	maxReconnectionAttempts        = "MAX_RECONNECTION_ATTEMPTS"
@@ -20,7 +21,7 @@ const (
 	useWSS                         = "USE_WSS"
 	defaultUseWSS                  = false
 	port                           = "PORT"
-	defaultPort                    = "8080"
+	defaultPort                    = "8100"
 	imageTag                       = "IMAGE_TAG"
 	defaultImageTag                = "development"
 
@@ -31,6 +32,7 @@ const (
 type options struct {
 	// Required env variables
 	gatewayDomain string
+	wsAuthKey     string
 	// Optional env variables
 	maxReconnectionAttempts int
 	useWSS                  bool
@@ -42,6 +44,7 @@ func gatherOptions() options {
 	return options{
 		// Required env variables
 		gatewayDomain: environment.MustGetString(gatewayDomain),
+		wsAuthKey:     environment.MustGetString(wsAuthKey),
 		// Optional env variables
 		maxReconnectionAttempts: int(environment.GetInt64(maxReconnectionAttempts, defaultMaxReconnectionAttempts)),
 		useWSS:                  environment.GetBool(useWSS, defaultUseWSS),
@@ -67,6 +70,7 @@ func main() {
 		GatewayURLFunc:          gatewayURLFunc,
 		MaxReconnectionAttempts: options.maxReconnectionAttempts,
 		Port:                    options.port,
+		WSAuthKey:               options.wsAuthKey,
 		ImageTag:                options.imageTag,
 		Logger:                  logger,
 	})
