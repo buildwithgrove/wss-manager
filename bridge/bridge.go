@@ -37,7 +37,7 @@ type (
 		clientConn              *websocket.Conn
 		gatewayConn             *websocket.Conn
 		gatewayURL              string
-		wsAuthKey               string
+		headers                 http.Header
 		maxReconnectionAttempts int
 
 		stopChan       chan error
@@ -54,7 +54,7 @@ type (
 	Config struct {
 		ClientConn              *websocket.Conn
 		GatewayURL              string
-		WSAuthKey               string
+		Headers                 http.Header
 		MaxReconnectionAttempts int
 		Log                     *logger.Logger
 	}
@@ -65,7 +65,7 @@ func NewBridge(config Config) (*Bridge, error) {
 	b := &Bridge{
 		clientConn:              config.ClientConn,
 		gatewayURL:              config.GatewayURL,
-		wsAuthKey:               config.WSAuthKey,
+		headers:                 config.Headers,
 		maxReconnectionAttempts: config.MaxReconnectionAttempts,
 
 		stopChan:       make(chan error),
@@ -117,9 +117,7 @@ func (b *Bridge) Run() {
 
 // connectGateway connects to the gateway and returns the websocket connection.
 func (b *Bridge) connectGateway() (*websocket.Conn, error) {
-	headers := http.Header{websockets.AuthHeader: []string{b.wsAuthKey}}
-
-	conn, _, err := websocket.DefaultDialer.Dial(b.gatewayURL, headers)
+	conn, _, err := websocket.DefaultDialer.Dial(b.gatewayURL, b.headers)
 	if err != nil {
 		return nil, err
 	}
