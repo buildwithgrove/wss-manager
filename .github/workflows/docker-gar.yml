@@ -140,7 +140,7 @@ jobs:
         with:
           build-args: |
             IMAGE_TAG=${{ needs.tag.outputs.version }}
-            GITHUB_TOKEN=${{ secrets.GH_ACCESS_TOKEN }}
+            GITHUB_TOKEN=${{ secrets.POKT_BOT_GITHUB_TOKEN }}
           context: .
           push: true
           tags: |
