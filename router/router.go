@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
+	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-manager/bridge"
 )
@@ -143,11 +144,18 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// forward auth header (if set) & WS auth key header
+	headers := http.Header{}
+	if req.Header.Get("Authorization") != "" {
+		headers.Set("Authorization", req.Header.Get("Authorization"))
+	}
+	headers.Set(websockets.AuthHeader, wr.wsAuthKey)
+
 	// create a new bridge, which includes creating a new gateway connection
 	bridge, err := bridge.NewBridge(bridge.Config{
 		ClientConn:              clientConn,
 		GatewayURL:              wr.gatewayURLFunc(chain, appID),
-		WSAuthKey:               wr.wsAuthKey,
+		Headers:                 headers,
 		MaxReconnectionAttempts: wr.maxReconnectionAttempts,
 		Log:                     wr.logger,
 	})
