@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/websockets"
+	"github.com/pokt-foundation/utils-go/client"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-manager/bridge"
 )
@@ -21,7 +23,7 @@ import (
 type (
 	wsRouter struct {
 		mux                     *http.ServeMux
-		client                  http.Client
+		http                    *client.Client
 		logger                  *logger.Logger
 		gatewayURLFunc          GatewayURLFunc
 		maxReconnectionAttempts int
@@ -77,7 +79,7 @@ func methodCheckMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
 		mux:                     http.NewServeMux(),
-		client:                  http.Client{Timeout: 10 * time.Second},
+		http:                    newHTTPClient(),
 		gatewayURLFunc:          config.GatewayURLFunc,
 		maxReconnectionAttempts: config.MaxReconnectionAttempts,
 		wsAuthKey:               config.WSAuthKey,
@@ -94,6 +96,26 @@ func newAPIRouter(config Config) *wsRouter {
 	wr.mux.HandleFunc("/v1/{app}", wr.requestHandler)
 
 	return wr
+}
+
+// newHTTPClient creates a new HTTP client with the same transport config as Gateway
+// This client is used to proxy requests to the Gateway
+func newHTTPClient() *client.Client {
+	return client.NewCustomClientWithOptions(client.CustomClientOpts{
+		Transport: &http.Transport{
+			MaxConnsPerHost:     100,
+			MaxIdleConnsPerHost: 100,
+			MaxIdleConns:        10_000,
+			IdleConnTimeout:     90 * time.Second,
+			DialContext: (&net.Dialer{
+				Timeout:   3 * time.Second,
+				KeepAlive: 30 * time.Second,
+				DualStack: true,
+			}).DialContext,
+		},
+		Timeout: 10 * time.Second,
+		Retries: 3,
+	})
 }
 
 // * /healthz - handleHealthz returns a simple health check response
@@ -148,27 +170,29 @@ func (wr *wsRouter) requestHandler(w http.ResponseWriter, req *http.Request) {
 // httpHandler handles HTTP requests by proxying them to the Gateway and returning the response to the user
 func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
 	scheme := getScheme("http", req)
-
 	url := wr.gatewayURLFunc(scheme, chain, req.URL.Path)
 
-	proxyReq, err := http.NewRequest(req.Method, url, req.Body)
+	ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
+	defer cancel()
+
+	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, url, req.Body)
 	if err != nil {
 		wr.logger.Error("error creating proxy request", slog.String("error", err.Error()))
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	proxyReq.Header = req.Header
 
-	resp, err := wr.client.Do(proxyReq)
+	resp, err := wr.http.Client.Do(proxyReq)
 	if err != nil {
 		wr.logger.Error("error making proxy request", slog.String("error", err.Error()))
+		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
 	for k, vv := range resp.Header {
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
+		w.Header()[k] = vv
 	}
 
 	w.WriteHeader(resp.StatusCode)
