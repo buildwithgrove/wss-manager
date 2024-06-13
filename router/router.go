@@ -45,6 +45,12 @@ type (
 
 // Start starts the API server on the specified port
 func Start(ctx context.Context, config Config) error {
+	defer func() {
+		if r := recover(); r != nil {
+			config.Logger.Error(fmt.Sprintf("router panicked: %v", r))
+		}
+	}()
+
 	router := newAPIRouter(config)
 
 	server := &http.Server{

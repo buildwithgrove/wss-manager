@@ -93,6 +93,12 @@ func NewBridge(config Config) (*Bridge, error) {
 
 // Run starts the bridge and establishes a bidirectional communication between the client and server
 func (b *Bridge) Run() {
+	defer func() {
+		if r := recover(); r != nil {
+			b.log.Error(fmt.Sprintf("bridge panicked: %v", r))
+		}
+	}()
+
 	// Start goroutine to read from client and write to gateway
 	go b.clientLoop()
 
