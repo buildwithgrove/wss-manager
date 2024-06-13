@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -19,6 +21,7 @@ import (
 type (
 	wsRouter struct {
 		mux                     *http.ServeMux
+		client                  http.Client
 		logger                  *logger.Logger
 		gatewayURLFunc          GatewayURLFunc
 		maxReconnectionAttempts int
@@ -35,7 +38,7 @@ type (
 		Logger                  *logger.Logger
 	}
 
-	GatewayURLFunc func(chain types.ChainAlias, appID types.PortalAppID) string
+	GatewayURLFunc func(scheme string, chain types.ChainAlias, path string) string
 )
 
 // Start starts the API server on the specified port
@@ -74,6 +77,7 @@ func methodCheckMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
 		mux:                     http.NewServeMux(),
+		client:                  http.Client{Timeout: 10 * time.Second},
 		gatewayURLFunc:          config.GatewayURLFunc,
 		maxReconnectionAttempts: config.MaxReconnectionAttempts,
 		wsAuthKey:               config.WSAuthKey,
@@ -84,8 +88,10 @@ func newAPIRouter(config Config) *wsRouter {
 	// GET /healthz - handleHealthz returns a simple health check response
 	wr.mux.HandleFunc("GET /healthz", methodCheckMiddleware(wr.handleHealthz))
 
-	// GET /v1/{app} - establishes a websocket connection to the WSS Manager
-	wr.mux.HandleFunc("GET /v1/{app}", methodCheckMiddleware(wr.websocketHandler))
+	// GET /v1/{app} - handles requests sent to the WSS Manager
+	// `wss` requests are upgraded to a WebSocket connection
+	// `https` requests are proxied to the Gateway
+	wr.mux.HandleFunc("/v1/{app}", wr.requestHandler)
 
 	return wr
 }
@@ -111,26 +117,72 @@ func (wr *wsRouter) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// GET /v1/{app} - handles requests sent to the WSS Manager
-func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
-	// parse the portal app from the request path to ensure it is present
-	appID := types.PortalAppID(req.PathValue("app"))
-	if appID == "" {
-		errString := "app must be present"
-		wr.logger.Error(errString)
-		wr.writeHandshakeErrorResponse(w, http.StatusBadRequest, errString)
-		return
-	}
+// isWebSocketRequest checks if the request is a WebSocket connection by checking the `Upgrade` and `Connection` headers
+func isWebSocketRequest(req *http.Request) bool {
+	upgradeHeader := strings.ToLower(req.Header.Get("Upgrade"))
+	connectionHeader := strings.ToLower(req.Header.Get("Connection"))
 
-	// parse the chain from the request host to ensure it is present
+	return upgradeHeader == "websocket" && strings.Contains(connectionHeader, "upgrade")
+}
+
+// getScheme returns the scheme of the request based on the presence of a TLS connection
+func getScheme(scheme string, req *http.Request) string {
+	if req.TLS != nil {
+		scheme += "s"
+	}
+	return scheme
+}
+
+// GET /v1/{app} - handles requests sent to the WSS Manager
+func (wr *wsRouter) requestHandler(w http.ResponseWriter, req *http.Request) {
 	chainDomain := types.ChainDomain(req.Host)
 	chain := chainDomain.GetAlias()
-	if chain == "" {
-		errString := "chain must be present"
-		wr.logger.Error(errString)
-		wr.writeHandshakeErrorResponse(w, http.StatusBadRequest, errString)
+
+	if isWebSocketRequest(req) {
+		wr.websocketHandler(w, req, chain)
+	} else {
+		wr.httpHandler(w, req, chain)
+	}
+}
+
+// httpHandler handles HTTP requests by proxying them to the Gateway and returning the response to the user
+func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
+	scheme := getScheme("http", req)
+
+	url := wr.gatewayURLFunc(scheme, chain, req.URL.Path)
+
+	proxyReq, err := http.NewRequest(req.Method, url, req.Body)
+	if err != nil {
+		wr.logger.Error("error creating proxy request", slog.String("error", err.Error()))
 		return
 	}
+	proxyReq.Header = req.Header
+
+	resp, err := wr.client.Do(proxyReq)
+	if err != nil {
+		wr.logger.Error("error making proxy request", slog.String("error", err.Error()))
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+
+	w.WriteHeader(resp.StatusCode)
+
+	_, err = io.Copy(w, resp.Body)
+	if err != nil {
+		wr.logger.Error("error writing response to client", slog.String("error", err.Error()))
+	}
+}
+
+// websocketHandler handles WebSocket connections by upgrading the connection to a WebSocket connection and creating a bridge
+func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
+	// add the `-ws` suffix to the chain to get the WebSocket chain alias
+	chain += "-ws"
 
 	// upgrade the client connection to a websocket connection
 	upgrader := websocket.Upgrader{
@@ -154,7 +206,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request) {
 	// create a new bridge, which includes creating a new gateway connection
 	bridge, err := bridge.NewBridge(bridge.Config{
 		ClientConn:              clientConn,
-		GatewayURL:              wr.gatewayURLFunc(chain, appID),
+		GatewayURL:              wr.gatewayURLFunc("ws", chain, req.URL.Path),
 		Headers:                 headers,
 		MaxReconnectionAttempts: wr.maxReconnectionAttempts,
 		Log:                     wr.logger,

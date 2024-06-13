@@ -18,15 +18,10 @@ const (
 	// Optional env variables
 	maxReconnectionAttempts        = "MAX_RECONNECTION_ATTEMPTS"
 	defaultMaxReconnectionAttempts = 100
-	useWSS                         = "USE_WSS"
-	defaultUseWSS                  = false
 	port                           = "PORT"
 	defaultPort                    = "8100"
 	imageTag                       = "IMAGE_TAG"
 	defaultImageTag                = "development"
-
-	// eg. wss://eth-mainnet.rpc.grove.city/v1/1a2b3c4d
-	gatewayURLTemplate = "%s://%s.%s/v1/%s"
 )
 
 type options struct {
@@ -35,7 +30,6 @@ type options struct {
 	wsAuthKey     string
 	// Optional env variables
 	maxReconnectionAttempts int
-	useWSS                  bool
 	port                    string
 	imageTag                string
 }
@@ -47,7 +41,6 @@ func gatherOptions() options {
 		wsAuthKey:     environment.MustGetString(wsAuthKey),
 		// Optional env variables
 		maxReconnectionAttempts: int(environment.GetInt64(maxReconnectionAttempts, defaultMaxReconnectionAttempts)),
-		useWSS:                  environment.GetBool(useWSS, defaultUseWSS),
 		port:                    environment.GetString(port, defaultPort),
 		imageTag:                environment.GetString(imageTag, defaultImageTag),
 	}
@@ -58,12 +51,10 @@ func main() {
 
 	logger := logger.New()
 
-	gatewayURLFunc := func(chain types.ChainAlias, appID types.PortalAppID) string {
-		scheme := "ws"
-		if options.useWSS {
-			scheme = "wss"
-		}
-		return fmt.Sprintf(gatewayURLTemplate, scheme, chain, options.gatewayDomain, appID)
+	// eg. [https/ws]://eth-mainnet.rpc.grove.city/v1/1a2b3c4d
+	gatewayURLFunc := func(scheme string, chain types.ChainAlias, path string) string {
+		const gatewayURLTemplate = "%s://%s.%s%s"
+		return fmt.Sprintf(gatewayURLTemplate, scheme, chain, options.gatewayDomain, path)
 	}
 
 	err := router.Start(context.Background(), router.Config{

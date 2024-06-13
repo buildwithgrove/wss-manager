@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -28,31 +29,44 @@ type (
 	gatewayResp string
 )
 
-func Test_websocketHandler(t *testing.T) {
+func Test_requestHandler(t *testing.T) {
 	tests := []struct {
-		name   string
-		app    types.PortalAppID
-		wsReqs map[clientReq]gatewayResp
-		err    error
+		name          string
+		app           types.PortalAppID
+		requests      map[clientReq]gatewayResp
+		websocketsReq bool
+		err           error
 	}{
 		{
-			name: "should connect without error when app ID provided",
-			app:  "1a2b3c4d",
-			err:  nil,
+			name:          "should connect without error when app ID provided",
+			app:           "1a2b3c4d",
+			websocketsReq: true,
+			err:           nil,
 		},
 		{
-			name: "should connect and send and receive messages through the bridge to the gateway",
+			name: "should establish a websocket connection and send and receive messages through the bridge to the gateway",
 			app:  "1a2b3c4d",
-			wsReqs: map[clientReq]gatewayResp{
+			requests: map[clientReq]gatewayResp{
 				`{"jsonrpc":"2.0","id":1,"method":"eth_gasPrice"}`:    `{"jsonrpc":"2.0","id":1,"result":"0x337d04a3b"}`,
 				`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber"}`: `{"jsonrpc":"2.0","id":1,"result":"0x12c1b21"}`,
 			},
-			err: nil,
+			websocketsReq: true,
+			err:           nil,
 		},
 		{
-			name: "should fail to connect when app ID is not provided",
-			app:  "",
-			err:  errors.New("websocket: bad handshake"),
+			name: "should proxy a regular HTTP request and return the gateway response to the client",
+			app:  "1a2b3c4d",
+			requests: map[clientReq]gatewayResp{
+				`{"jsonrpc":"2.0","id":1,"method":"eth_gasPrice"}`: `{"jsonrpc":"2.0","id":1,"result":"0x337d04a3b"}`,
+			},
+			websocketsReq: false,
+			err:           nil,
+		},
+		{
+			name:          "should fail to connect when app ID is not provided",
+			app:           "",
+			websocketsReq: true,
+			err:           errors.New("websocket: bad handshake"),
 		},
 	}
 
@@ -63,48 +77,121 @@ func Test_websocketHandler(t *testing.T) {
 			// Reset captured messages before each test
 			capturedMessages.clientRequests = make(map[clientReq]struct{})
 
-			testGatewayURL := testGatewayWSConn(t, test.wsReqs)
+			testHTTPGatewayURL := testGatewayHTTPServer(t, test.requests)
+			testWSSGatewayURL := testGatewayWSConn(t, test.requests)
 			config := Config{
 				Logger: logger.New(),
-				GatewayURLFunc: func(chain types.ChainAlias, appID types.PortalAppID) string {
-					return testGatewayURL
+				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
+					if strings.Contains(scheme, "http") {
+						return testHTTPGatewayURL
+					}
+					return testWSSGatewayURL
 				},
 			}
 			router := newAPIRouter(config)
 
 			// Setup mux & handlers
 			mux := http.NewServeMux()
-			mux.HandleFunc("/v1/{app}", router.websocketHandler)
+			mux.HandleFunc("/v1/{app}", router.requestHandler)
 			ts := httptest.NewServer(mux)
 
-			// Convert http test server URL to ws URL
-			wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + fmt.Sprintf("/v1/%s", test.app)
+			if test.websocketsReq {
+				// Send a WebSocket connection handshake and multiple messages
 
-			// Dial WebSocket server
-			conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{})
-			c.Equal(test.err, err)
+				// Convert http test server URL to ws URL
+				wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + fmt.Sprintf("/v1/%s", test.app)
 
-			for clientReq, gatewayResp := range test.wsReqs {
-				// Send message through the client
-				err := conn.WriteMessage(websocket.TextMessage, []byte(clientReq))
-				c.NoError(err)
+				// Dial WebSocket server
+				conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{})
+				c.Equal(test.err, err)
 
-				// Capture the response from the gateway
-				_, message, err := conn.ReadMessage()
-				c.NoError(err)
-				c.Equal(string(gatewayResp), string(message))
+				for clientReq, gatewayResp := range test.requests {
+					// Send message through the client
+					err := conn.WriteMessage(websocket.TextMessage, []byte(clientReq))
+					c.NoError(err)
 
-				// Assert that the client sent the expected requests and the gateway received the expected responses
-				capturedMessages.Lock()
-				_, exists := capturedMessages.clientRequests[clientReq]
-				c.True(exists, "Gateway did not receive expected request: %s", clientReq)
-				capturedMessages.Unlock()
+					// Capture the response from the gateway
+					_, message, err := conn.ReadMessage()
+					c.NoError(err)
+					c.Equal(string(gatewayResp), string(message))
+
+					// Assert that the client sent the expected requests and the gateway received the expected responses
+					capturedMessages.Lock()
+					_, exists := capturedMessages.clientRequests[clientReq]
+					c.True(exists, "Gateway did not receive expected request: %s", clientReq)
+					capturedMessages.Unlock()
+				}
+			} else {
+
+				// Send a regular HTTP request
+				httpURL := ts.URL + fmt.Sprintf("/v1/%s", test.app)
+				for clientReq, expectedResp := range test.requests {
+					reqBody := strings.NewReader(string(clientReq))
+
+					req, err := http.NewRequest("POST", httpURL, reqBody)
+					c.NoError(err)
+
+					resp, err := http.DefaultClient.Do(req)
+					c.NoError(err)
+					c.Equal(test.err, err)
+
+					// Read response body
+					respBody, err := io.ReadAll(resp.Body)
+					c.NoError(err)
+					resp.Body.Close()
+
+					// Compare the response body with the expected response
+					c.Equal(string(expectedResp), string(respBody))
+
+					// Assert that the client sent the expected requests and the gateway received the expected responses
+					capturedMessages.Lock()
+					_, exists := capturedMessages.clientRequests[clientReq]
+					c.True(exists, "Gateway did not receive expected request: %s", clientReq)
+					capturedMessages.Unlock()
+				}
+
 			}
 		})
 	}
 }
 
-func testGatewayWSConn(t *testing.T, wsReqs map[clientReq]gatewayResp) string {
+// testGatewayHTTPServer creates a test HTTP server that mocks the gateway regular relay handling
+func testGatewayHTTPServer(t *testing.T, requests map[clientReq]gatewayResp) string {
+	httpHandler := func(w http.ResponseWriter, r *http.Request) {
+		var raw json.RawMessage
+		err := json.NewDecoder(r.Body).Decode(&raw)
+		if err != nil {
+			t.Error("Failed to decode request:", err)
+			http.Error(w, "Bad request", http.StatusBadRequest)
+			return
+		}
+
+		req := clientReq(raw)
+
+		capturedMessages.Lock()
+		capturedMessages.clientRequests[req] = struct{}{}
+		capturedMessages.Unlock()
+
+		response, exists := requests[req]
+		if !exists {
+			http.Error(w, "Not found", http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, err = w.Write([]byte(response))
+		if err != nil {
+			t.Error("Failed to write response:", err)
+		}
+	}
+
+	s := httptest.NewServer(http.HandlerFunc(httpHandler))
+
+	return s.URL
+}
+
+// testGatewayWSConn creates a test WebSocket server that mocks the gateway websockets handling
+func testGatewayWSConn(t *testing.T, requests map[clientReq]gatewayResp) string {
 	gatewaySocketHandler := func(w http.ResponseWriter, r *http.Request) {
 		upgrader := websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
@@ -134,7 +221,7 @@ func testGatewayWSConn(t *testing.T, wsReqs map[clientReq]gatewayResp) string {
 				capturedMessages.clientRequests[messageReq] = struct{}{}
 				capturedMessages.Unlock()
 
-				if response, ok := wsReqs[messageReq]; ok {
+				if response, ok := requests[messageReq]; ok {
 					gatewayMessage := websockets.GatewayMessage{
 						Message: []byte(response),
 					}
