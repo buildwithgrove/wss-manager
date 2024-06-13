@@ -13,7 +13,6 @@ import (
 const (
 	// Required env variables
 	gatewayDomain = "GATEWAY_DOMAIN"
-	wsAuthKey     = "WS_AUTH_KEY"
 
 	// Optional env variables
 	maxReconnectionAttempts        = "MAX_RECONNECTION_ATTEMPTS"
@@ -27,7 +26,6 @@ const (
 type options struct {
 	// Required env variables
 	gatewayDomain string
-	wsAuthKey     string
 	// Optional env variables
 	maxReconnectionAttempts int
 	port                    string
@@ -38,7 +36,6 @@ func gatherOptions() options {
 	return options{
 		// Required env variables
 		gatewayDomain: environment.MustGetString(gatewayDomain),
-		wsAuthKey:     environment.MustGetString(wsAuthKey),
 		// Optional env variables
 		maxReconnectionAttempts: int(environment.GetInt64(maxReconnectionAttempts, defaultMaxReconnectionAttempts)),
 		port:                    environment.GetString(port, defaultPort),
@@ -67,7 +64,6 @@ func main() {
 		GatewayURLFunc:          gatewayURLFunc,
 		MaxReconnectionAttempts: options.maxReconnectionAttempts,
 		Port:                    options.port,
-		WSAuthKey:               options.wsAuthKey,
 		ImageTag:                options.imageTag,
 		Logger:                  logger,
 	})
