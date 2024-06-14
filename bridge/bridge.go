@@ -167,8 +167,12 @@ func (b *Bridge) closeBridge(errStr string, err error) {
 
 	b.log.Error(errStr, slog.String("error", err.Error()))
 
-	b.stopChan <- fmt.Errorf("%s: %w", errStr, err)
-	close(b.stopChan)
+	select {
+	case b.stopChan <- fmt.Errorf("%s: %w", errStr, err):
+		close(b.stopChan)
+	default:
+		// stopChan is already closed
+	}
 }
 
 /* ---------- Private methods - WebSocket loop methods ---------- */
