@@ -1,20 +1,26 @@
 package router
 
 import (
+	"bufio"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/websockets"
+	"github.com/pokt-foundation/utils-go/client"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/stretchr/testify/require"
 )
@@ -29,6 +35,183 @@ type (
 	gatewayResp string
 )
 
+func Test_Start(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  Config
+		wantErr bool
+	}{
+		{
+			name: "should start server without error",
+			config: Config{
+				Port:   "8080",
+				Logger: logger.New(),
+				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
+					return "http://localhost:8080"
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "should return error when server fails to start",
+			config: Config{
+				Port:   "invalid_port",
+				Logger: logger.New(),
+				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
+					return "http://localhost:8080"
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- Start(ctx, test.config)
+			}()
+
+			select {
+			case err := <-errCh:
+				if test.wantErr {
+					c.Error(err)
+				} else {
+					c.NoError(err)
+				}
+			case <-time.After(2 * time.Second):
+				if test.wantErr {
+					c.Fail("expected error but got none")
+				} else {
+					cancel()
+				}
+			}
+		})
+	}
+}
+
+func Test_methodCheckMiddleware(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "should allow GET requests",
+			method:     http.MethodGet,
+			wantStatus: http.StatusOK,
+			wantBody:   "ok",
+		},
+		{
+			name:       "should reject non-GET requests",
+			method:     http.MethodPost,
+			wantStatus: http.StatusMethodNotAllowed,
+			wantBody:   "method not allowed: only GET requests are allowed\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			handler := methodCheckMiddleware(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, err := w.Write([]byte("ok"))
+				c.NoError(err)
+			})
+
+			req := httptest.NewRequest(test.method, "/healthz", nil)
+			w := httptest.NewRecorder()
+
+			handler(w, req)
+
+			resp := w.Result()
+			body, err := io.ReadAll(resp.Body)
+			c.NoError(err)
+			resp.Body.Close()
+
+			c.Equal(test.wantStatus, resp.StatusCode)
+			c.Equal(test.wantBody, string(body))
+		})
+	}
+}
+
+func Test_handleHealthz(t *testing.T) {
+	tests := []struct {
+		name       string
+		imageTag   string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "should return health check response",
+			imageTag:   "v1.0.0",
+			wantStatus: http.StatusOK,
+			wantBody:   `{"status":"ok","imageTag":"v1.0.0"}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			config := Config{
+				Logger: logger.New(),
+			}
+			router := newAPIRouter(config)
+			router.imageTag = test.imageTag
+
+			req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+			w := httptest.NewRecorder()
+
+			router.handleHealthz(w, req)
+
+			resp := w.Result()
+			body, err := io.ReadAll(resp.Body)
+			c.NoError(err)
+			resp.Body.Close()
+
+			c.Equal(test.wantStatus, resp.StatusCode)
+			c.JSONEq(test.wantBody, string(body))
+		})
+	}
+}
+
+func Test_getScheme(t *testing.T) {
+	tests := []struct {
+		name   string
+		scheme string
+		req    *http.Request
+		want   string
+	}{
+		{
+			name:   "should return http when no TLS",
+			scheme: "http",
+			req:    httptest.NewRequest(http.MethodGet, "http://example.com", nil),
+			want:   "http",
+		},
+		{
+			name:   "should return https when TLS is present",
+			scheme: "http",
+			req:    &http.Request{TLS: &tls.ConnectionState{}},
+			want:   "https",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+			got := getScheme(test.scheme, test.req)
+			c.Equal(test.want, got)
+		})
+	}
+}
+
 func Test_requestHandler(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -36,6 +219,7 @@ func Test_requestHandler(t *testing.T) {
 		requests      map[clientReq]gatewayResp
 		websocketsReq bool
 		err           error
+		authHeader    string
 	}{
 		{
 			name:          "should connect without error when app ID provided",
@@ -67,6 +251,13 @@ func Test_requestHandler(t *testing.T) {
 			app:           "",
 			websocketsReq: true,
 			err:           errors.New("websocket: bad handshake"),
+		},
+		{
+			name:          "should forward Authorization header if set",
+			app:           "1a2b3c4d",
+			websocketsReq: true,
+			err:           nil,
+			authHeader:    "Bearer testtoken",
 		},
 	}
 
@@ -102,7 +293,11 @@ func Test_requestHandler(t *testing.T) {
 				wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + fmt.Sprintf("/v1/%s", test.app)
 
 				// Dial WebSocket server
-				conn, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{})
+				headers := http.Header{}
+				if test.authHeader != "" {
+					headers.Set("Authorization", test.authHeader)
+				}
+				conn, _, err := websocket.DefaultDialer.Dial(wsURL, headers)
 				c.Equal(test.err, err)
 
 				for clientReq, gatewayResp := range test.requests {
@@ -130,6 +325,9 @@ func Test_requestHandler(t *testing.T) {
 
 					req, err := http.NewRequest("POST", httpURL, reqBody)
 					c.NoError(err)
+					if test.authHeader != "" {
+						req.Header.Set("Authorization", test.authHeader)
+					}
 
 					resp, err := http.DefaultClient.Do(req)
 					c.NoError(err)
@@ -151,6 +349,130 @@ func Test_requestHandler(t *testing.T) {
 				}
 
 			}
+		})
+	}
+}
+
+func Test_httpHandler_Errors(t *testing.T) {
+	tests := []struct {
+		name       string
+		req        *http.Request
+		setupMocks func(*wsRouter)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "should return internal server error when proxy request creation fails",
+			req:  httptest.NewRequest(http.MethodGet, "http://example.com", nil),
+			setupMocks: func(wr *wsRouter) {
+				wr.gatewayURLFunc = func(scheme string, chain types.ChainAlias, path string) string {
+					return "http://[::1]:namedport" // Invalid URL to trigger error
+				}
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   "Internal Server Error\n",
+		},
+		{
+			name: "should return bad gateway when proxy request fails",
+			req:  httptest.NewRequest(http.MethodGet, "http://example.com", nil),
+			setupMocks: func(wr *wsRouter) {
+				wr.gatewayURLFunc = func(scheme string, chain types.ChainAlias, path string) string {
+					return "http://localhost:9999" // assuming nothing is running on this port
+				}
+			},
+			wantStatus: http.StatusBadGateway,
+			wantBody:   "Bad Gateway\n",
+		},
+		{
+			name: "should return error when writing response to client fails",
+			req:  httptest.NewRequest(http.MethodGet, "http://example.com", nil),
+			setupMocks: func(wr *wsRouter) {
+				wr.gatewayURLFunc = func(scheme string, chain types.ChainAlias, path string) string {
+					return "http://localhost:8080"
+				}
+				wr.http = &client.Client{
+					Client: &http.Client{
+						Transport: &errorTransport{},
+					},
+				}
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   "Internal Server Error\n",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			config := Config{
+				Logger: logger.New(),
+			}
+			router := newAPIRouter(config)
+			test.setupMocks(router)
+
+			w := httptest.NewRecorder()
+			router.httpHandler(w, test.req, "chain")
+
+			resp := w.Result()
+			body, err := io.ReadAll(resp.Body)
+			c.NoError(err)
+			resp.Body.Close()
+
+			c.Equal(test.wantStatus, resp.StatusCode)
+			c.Equal(test.wantBody, string(body))
+		})
+	}
+}
+
+func Test_websocketHandler_Errors(t *testing.T) {
+	tests := []struct {
+		name       string
+		req        *http.Request
+		setupMocks func(*wsRouter)
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name: "should return error when upgrading connection fails",
+			req: func() *http.Request {
+				r := httptest.NewRequest(http.MethodGet, "http://example.com", nil)
+				r.Header.Set("Connection", "Upgrade")
+				r.Header.Set("Upgrade", "websocket")
+				r.Header.Set("Sec-WebSocket-Version", "13")
+				r.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+				return r
+			}(),
+			setupMocks: func(wr *wsRouter) {
+				wr.gatewayURLFunc = func(scheme string, chain types.ChainAlias, path string) string {
+					return "ws://localhost:8080"
+				}
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantBody:   "Internal Server Error\nerror upgrading connection: hijack not supported",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			config := Config{
+				Logger: logger.New(),
+			}
+			router := newAPIRouter(config)
+			test.setupMocks(router)
+
+			w := &hijackableResponseRecorder{httptest.NewRecorder()}
+			router.websocketHandler(w, test.req, "chain")
+
+			resp := w.Result()
+			body, err := io.ReadAll(resp.Body)
+			c.NoError(err)
+			resp.Body.Close()
+
+			c.Equal(test.wantStatus, resp.StatusCode)
+			c.Equal(test.wantBody, string(body))
 		})
 	}
 }
@@ -252,4 +574,68 @@ func testGatewayWSConn(t *testing.T, requests map[clientReq]gatewayResp) string 
 	wsURL := strings.Replace(u.String(), "http", "ws", 1)
 
 	return wsURL
+}
+
+func Test_writeHandshakeErrorResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		message    string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "should write handshake error response",
+			statusCode: http.StatusBadRequest,
+			message:    "bad request error",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "bad request error",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			config := Config{
+				Logger: logger.New(),
+			}
+			router := newAPIRouter(config)
+
+			w := httptest.NewRecorder()
+			router.writeHandshakeErrorResponse(w, test.statusCode, test.message)
+
+			resp := w.Result()
+			body, err := io.ReadAll(resp.Body)
+			c.NoError(err)
+			resp.Body.Close()
+
+			c.Equal(test.wantStatus, resp.StatusCode)
+			c.Equal(test.wantBody, string(body))
+		})
+	}
+}
+
+type errorTransport struct{}
+
+func (e *errorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(&errorReader{}),
+		Header:     make(http.Header),
+	}, nil
+}
+
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (n int, err error) {
+	return 0, fmt.Errorf("read error")
+}
+
+type hijackableResponseRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func (h *hijackableResponseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, errors.New("hijack not supported")
 }

@@ -197,9 +197,16 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 		w.Header()[k] = vv
 	}
 
-	w.WriteHeader(resp.StatusCode)
+	var buf strings.Builder
+	_, err = io.Copy(&buf, resp.Body)
+	if err != nil {
+		wr.logger.Error("error writing response to client", slog.String("error", err.Error()))
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 
-	_, err = io.Copy(w, resp.Body)
+	w.WriteHeader(resp.StatusCode)
+	_, err = w.Write([]byte(buf.String()))
 	if err != nil {
 		wr.logger.Error("error writing response to client", slog.String("error", err.Error()))
 	}
