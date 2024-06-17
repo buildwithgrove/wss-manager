@@ -14,15 +14,18 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
+	"github.com/pokt-foundation/portal-middleware/metrics/exporter"
 	"github.com/pokt-foundation/utils-go/client"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-manager/bridge"
+	"github.com/pokt-foundation/wss-manager/metrics"
 )
 
 type (
 	wsRouter struct {
 		mux                     *http.ServeMux
 		http                    *client.Client
+		metrics                 exporter.MetricExporter
 		logger                  *logger.Logger
 		gatewayURLFunc          GatewayURLFunc
 		maxReconnectionAttempts int
@@ -31,6 +34,7 @@ type (
 
 	Config struct {
 		GatewayURLFunc          GatewayURLFunc
+		MetricExporter          exporter.MetricExporter
 		MaxReconnectionAttempts int
 		ImageTag                string
 		Port                    string
@@ -102,6 +106,7 @@ func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
 		mux:                     http.NewServeMux(),
 		http:                    newHTTPClient(),
+		metrics:                 config.MetricExporter,
 		gatewayURLFunc:          config.GatewayURLFunc,
 		maxReconnectionAttempts: config.MaxReconnectionAttempts,
 		imageTag:                config.ImageTag,
@@ -196,9 +201,12 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
 	defer cancel()
 
+	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).Inc(metrics.LabelAttempt)
+
 	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, url, req.Body)
 	if err != nil {
 		wr.logger.Error("error creating proxy request", slog.String("error", err.Error()))
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).Inc(metrics.LabelError)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -207,6 +215,7 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	resp, err := wr.http.Client.Do(proxyReq)
 	if err != nil {
 		wr.logger.Error("error making proxy request", slog.String("error", err.Error()))
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).Inc(metrics.LabelError)
 		http.Error(w, "Bad Gateway", http.StatusBadGateway)
 		return
 	}
@@ -220,6 +229,7 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	_, err = io.Copy(&buf, resp.Body)
 	if err != nil {
 		wr.logger.Error("error writing response to client", slog.String("error", err.Error()))
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).Inc(metrics.LabelError)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -228,13 +238,18 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	_, err = w.Write([]byte(buf.String()))
 	if err != nil {
 		wr.logger.Error("error writing response to client", slog.String("error", err.Error()))
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).Inc(metrics.LabelError)
 	}
+
+	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).Inc(metrics.LabelSuccess)
 }
 
 // websocketHandler handles WebSocket connections by upgrading the connection to a WebSocket connection and creating a bridge
 func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
 	// add the `-ws` suffix to the chain to get the WebSocket chain alias
 	chain += "-ws"
+
+	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelAttempt)
 
 	// upgrade the client connection to a websocket connection
 	upgrader := websocket.Upgrader{
@@ -244,6 +259,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	if err != nil {
 		errString := fmt.Sprintf("error upgrading connection: %s", err.Error())
 		wr.logger.Error(errString)
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelError)
 		wr.writeHandshakeErrorResponse(w, http.StatusBadRequest, errString)
 		return
 	}
@@ -258,17 +274,20 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	bridge, err := bridge.NewBridge(bridge.Config{
 		ClientConn:              clientConn,
 		GatewayURL:              wr.gatewayURLFunc("ws", chain, req.URL.Path),
+		MetricExporter:          wr.metrics,
 		Headers:                 headers,
 		MaxReconnectionAttempts: wr.maxReconnectionAttempts,
 		Log:                     wr.logger,
 	})
 	if err != nil {
 		wr.logger.Error(fmt.Sprintf("error creating bridge: %s", err.Error()))
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelError)
 
 		// if gateway connection fails, close the connection with the client and send the reason for the closure
 		closeMsg := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error())
 		if writeErr := clientConn.WriteMessage(websocket.CloseMessage, closeMsg); writeErr != nil {
 			wr.logger.Error(fmt.Sprintf("error writing close message to client: %s", writeErr.Error()))
+			wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelError)
 		}
 		clientConn.Close()
 
@@ -277,6 +296,8 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 
 	// run the bridge between client websocket and gateway websocket
 	go bridge.Run()
+
+	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelSuccess)
 }
 
 // writeHandshakeErrorResponse writes a standard HTTP error response to the client.

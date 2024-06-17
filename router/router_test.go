@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pokt-foundation/portal-http-db/v2/types"
+	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
 	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/client"
 	"github.com/pokt-foundation/utils-go/logger"
@@ -49,6 +50,7 @@ func Test_Start(t *testing.T) {
 				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
 					return "http://localhost:8080"
 				},
+				MetricExporter: exporterMocks.Exporter{},
 			},
 			wantErr: false,
 		},
@@ -60,6 +62,7 @@ func Test_Start(t *testing.T) {
 				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
 					return "http://localhost:8080"
 				},
+				MetricExporter: exporterMocks.Exporter{},
 			},
 			wantErr: true,
 		},
@@ -228,7 +231,8 @@ func Test_handleHealthz(t *testing.T) {
 			c := require.New(t)
 
 			config := Config{
-				Logger: logger.New(),
+				Logger:         logger.New(),
+				MetricExporter: exporterMocks.Exporter{},
 			}
 			router := newAPIRouter(config)
 			router.imageTag = test.imageTag
@@ -372,6 +376,7 @@ func Test_requestHandler(t *testing.T) {
 					}
 					return testWSSGatewayURL
 				},
+				MetricExporter: exporterMocks.Exporter{},
 			}
 			router := newAPIRouter(config)
 
@@ -513,7 +518,8 @@ func Test_httpHandler_Errors(t *testing.T) {
 			c := require.New(t)
 
 			config := Config{
-				Logger: logger.New(),
+				Logger:         logger.New(),
+				MetricExporter: exporterMocks.Exporter{},
 			}
 			router := newAPIRouter(config)
 			test.setupMocks(router)
@@ -565,7 +571,8 @@ func Test_websocketHandler_Errors(t *testing.T) {
 			c := require.New(t)
 
 			config := Config{
-				Logger: logger.New(),
+				Logger:         logger.New(),
+				MetricExporter: exporterMocks.Exporter{},
 			}
 			router := newAPIRouter(config)
 			test.setupMocks(router)
@@ -705,7 +712,8 @@ func Test_writeHandshakeErrorResponse(t *testing.T) {
 			c := require.New(t)
 
 			config := Config{
-				Logger: logger.New(),
+				Logger:         logger.New(),
+				MetricExporter: exporterMocks.Exporter{},
 			}
 			router := newAPIRouter(config)
 

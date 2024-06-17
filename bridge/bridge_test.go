@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
 	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/stretchr/testify/require"
@@ -44,6 +45,7 @@ func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, l
 		clientConn:              clientConn,
 		gatewayConn:             gatewayConn,
 		gatewayURL:              gatewayURL,
+		metrics:                 exporterMocks.Exporter{},
 		maxReconnectionAttempts: 10,
 
 		stopChan:       make(chan error),
@@ -308,6 +310,7 @@ func Test_cleanup(t *testing.T) {
 			bridge := &Bridge{
 				clientConn:  clientConn,
 				gatewayConn: gatewayConn,
+				metrics:     exporterMocks.Exporter{},
 				log:         logger.New(),
 				wsLock:      sync.Mutex{},
 			}
@@ -380,6 +383,7 @@ func Test_handleClientError(t *testing.T) {
 			bridge := &Bridge{
 				clientConn:  clientConn,
 				gatewayConn: gatewayConn,
+				metrics:     exporterMocks.Exporter{},
 				log:         logger.New(),
 				wsLock:      sync.Mutex{},
 				stopChan:    make(chan error, 1),
@@ -452,6 +456,7 @@ func Test_handleGatewayError(t *testing.T) {
 			bridge := &Bridge{
 				clientConn:  clientConn,
 				gatewayConn: gatewayConn,
+				metrics:     exporterMocks.Exporter{},
 				log:         logger.New(),
 				wsLock:      sync.Mutex{},
 				stopChan:    make(chan error, 1),
@@ -541,6 +546,7 @@ func Test_reconnectToGateway(t *testing.T) {
 			bridge := &Bridge{
 				clientConn:              clientConn,
 				gatewayURL:              gatewayURL,
+				metrics:                 exporterMocks.Exporter{},
 				headers:                 http.Header{},
 				maxReconnectionAttempts: test.maxReconnectionAttempts,
 				stopChan:                make(chan error),

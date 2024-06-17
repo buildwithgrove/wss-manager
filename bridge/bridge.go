@@ -10,9 +10,11 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/pokt-foundation/portal-middleware/metrics/exporter"
 	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-manager/metrics"
 )
 
 const (
@@ -21,6 +23,7 @@ const (
 	pingPeriod    = (pongWait * 9) / 10 // Send pings to peer with this period. Must be less than pongWait.
 	backoffFactor = 2                   // Factor by which the gateway reconnection interval increases
 	maxBackoff    = 10 * time.Second    // Maximum backoff interval for gateway reconnection
+
 )
 
 type (
@@ -37,6 +40,7 @@ type (
 		clientConn              *websocket.Conn
 		gatewayConn             *websocket.Conn
 		gatewayURL              string
+		metrics                 exporter.MetricExporter
 		headers                 http.Header
 		maxReconnectionAttempts int
 
@@ -54,6 +58,7 @@ type (
 	Config struct {
 		ClientConn              *websocket.Conn
 		GatewayURL              string
+		MetricExporter          exporter.MetricExporter
 		Headers                 http.Header
 		MaxReconnectionAttempts int
 		Log                     *logger.Logger
@@ -65,6 +70,7 @@ func NewBridge(config Config) (*Bridge, error) {
 	b := &Bridge{
 		clientConn:              config.ClientConn,
 		gatewayURL:              config.GatewayURL,
+		metrics:                 config.MetricExporter,
 		headers:                 config.Headers,
 		maxReconnectionAttempts: config.MaxReconnectionAttempts,
 
@@ -187,14 +193,18 @@ func (b *Bridge) clientLoop() {
 		default:
 			messageType, msg, err := b.clientConn.ReadMessage()
 			if err != nil {
+				b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).Inc(metrics.LabelErrorRead)
 				b.handleClientError(err)
 				return
 			}
+
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).Inc(metrics.LabelAttempt)
 
 			clientMsg := websockets.ClientMessage{Message: msg}
 			clientMsgBytes, err := json.Marshal(clientMsg)
 			if err != nil {
 				b.log.Error("error marshalling client message:", slog.String("error", err.Error()))
+				b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).Inc(metrics.LabelErrorMarshal)
 				continue
 			}
 
@@ -204,9 +214,12 @@ func (b *Bridge) clientLoop() {
 				b.wsLock.Unlock()
 				// An error writing means the connection is broken and the bridge should be stopped
 				b.closeBridge("error writing to gateway websocket", err)
+				b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).Inc(metrics.LabelErrorWrite)
 				return
 			}
 			b.wsLock.Unlock()
+
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).Inc(metrics.LabelSuccess)
 		}
 	}
 }
@@ -240,14 +253,18 @@ func (b *Bridge) gatewayLoop() {
 				if reconnectedToGateway := b.handleGatewayError(err); reconnectedToGateway {
 					continue // Resume gateway read loop if reconnection was successful
 				} else {
+					b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).Inc(metrics.LabelErrorRead)
 					return
 				}
 			}
+
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).Inc(metrics.LabelAttempt)
 
 			// Check if the message is a subscription event or a response to a pending subscribe or unsubscribe request
 			processedMsg, err := b.processGatewayResponse(message)
 			if err != nil {
 				b.log.Error("error processing gateway response:", slog.String("error", err.Error()))
+				b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).Inc(metrics.LabelErrorProcess)
 				continue
 			}
 
@@ -262,9 +279,12 @@ func (b *Bridge) gatewayLoop() {
 				b.wsLock.Unlock()
 				// An error writing means the connection is broken and the bridge should be stopped
 				b.closeBridge("error writing to client websocket", err)
+				b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).Inc(metrics.LabelErrorWrite)
 				return
 			}
 			b.wsLock.Unlock()
+
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).Inc(metrics.LabelSuccess)
 		}
 	}
 }
@@ -422,6 +442,8 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		b.subscriptions[subscription.ID] = subscription
 		b.subsLock.Unlock()
 
+		b.metrics.Gauge(metrics.CategoryBridge, metrics.NameSubscribe).Inc(metrics.LabelSubscriptionAdd)
+
 	// If response is a unsubscription confirmation remove the subscription from the subscriptions map
 	case websockets.SubTypeUnsubscribe:
 		unsubID := gatewayMsg.Unsubscription
@@ -429,6 +451,8 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		b.subsLock.Lock()
 		delete(b.subscriptions, *unsubID)
 		b.subsLock.Unlock()
+
+		b.metrics.Gauge(metrics.CategoryBridge, metrics.NameSubscribe).Sub(metrics.LabelSubscriptionRemove, 1)
 	}
 
 	return nil
@@ -438,6 +462,8 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 
 // reconnectToGateway reconnects to the gateway in case of connection drop with incremental backoff.
 func (b *Bridge) reconnectToGateway() error {
+	b.metrics.Counter(metrics.CategoryBridge, metrics.NameReconnect).Inc(metrics.LabelAttempt)
+
 	var backoffInterval = 500 * time.Millisecond // Initial backoff interval
 
 	b.pausePingLoop <- struct{}{}
@@ -450,6 +476,7 @@ func (b *Bridge) reconnectToGateway() error {
 
 			if attempt == b.maxReconnectionAttempts {
 				b.log.Error("max reconnect attempts reached", slog.Int("maxReconnectionAttempts", b.maxReconnectionAttempts))
+				b.metrics.Counter(metrics.CategoryBridge, metrics.NameReconnect).Inc(metrics.LabelError)
 				return err
 			}
 
@@ -470,6 +497,7 @@ func (b *Bridge) reconnectToGateway() error {
 		b.wsLock.Unlock()
 
 		b.log.Info("Successfully reconnected to gateway")
+		b.metrics.Counter(metrics.CategoryBridge, metrics.NameReconnect).Inc(metrics.LabelSuccess)
 
 		if len(b.subscriptions) > 0 {
 			b.log.Info(fmt.Sprintf("resuming %d subscriptions", len(b.subscriptions)))
