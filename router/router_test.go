@@ -141,6 +141,73 @@ func Test_methodCheckMiddleware(t *testing.T) {
 	}
 }
 
+func Test_corsMiddleware(t *testing.T) {
+	tests := []struct {
+		name       string
+		method     string
+		origin     string
+		wantStatus int
+		wantHeader map[string]string
+	}{
+		{
+			name:       "should handle CORS preflight request",
+			method:     http.MethodOptions,
+			origin:     "http://example.com",
+			wantStatus: http.StatusOK,
+			wantHeader: map[string]string{
+				"Access-Control-Allow-Origin":  "http://example.com",
+				"Access-Control-Allow-Methods": "GET, POST, PUT",
+				"Access-Control-Allow-Headers": "Content-Type, solana-client",
+			},
+		},
+		{
+			name:       "should handle CORS actual request",
+			method:     http.MethodGet,
+			origin:     "http://example.com",
+			wantStatus: http.StatusOK,
+			wantHeader: map[string]string{
+				"Access-Control-Allow-Origin": "http://example.com",
+			},
+		},
+		{
+			name:       "should return error for invalid method",
+			method:     "INVALID",
+			origin:     "http://example.com",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantHeader: map[string]string{
+				"Access-Control-Allow-Origin": "http://example.com",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			handler := corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == "INVALID" {
+					http.Error(w, "Invalid method", http.StatusMethodNotAllowed)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			})
+
+			req := httptest.NewRequest(test.method, "/test", nil)
+			req.Header.Set("Origin", test.origin)
+			w := httptest.NewRecorder()
+
+			handler(w, req)
+
+			resp := w.Result()
+			c.Equal(test.wantStatus, resp.StatusCode)
+
+			for key, value := range test.wantHeader {
+				c.Equal(value, resp.Header.Get(key))
+			}
+		})
+	}
+}
+
 func Test_handleHealthz(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -220,6 +287,9 @@ func Test_requestHandler(t *testing.T) {
 		websocketsReq bool
 		err           error
 		authHeader    string
+		origin        string
+		wantHeader    map[string]string
+		wantStatus    int
 	}{
 		{
 			name:          "should connect without error when app ID provided",
@@ -258,6 +328,30 @@ func Test_requestHandler(t *testing.T) {
 			websocketsReq: true,
 			err:           nil,
 			authHeader:    "Bearer testtoken",
+		},
+		{
+			name:          "should handle CORS preflight request",
+			app:           "1a2b3c4d",
+			websocketsReq: false,
+			err:           nil,
+			origin:        "http://example.com",
+			wantHeader: map[string]string{
+				"Access-Control-Allow-Origin":  "http://example.com",
+				"Access-Control-Allow-Methods": "GET, POST, PUT",
+				"Access-Control-Allow-Headers": "Content-Type, solana-client",
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:          "should return error for invalid method",
+			app:           "1a2b3c4d",
+			websocketsReq: false,
+			err:           nil,
+			origin:        "http://example.com",
+			wantHeader: map[string]string{
+				"Access-Control-Allow-Origin": "http://example.com",
+			},
+			wantStatus: http.StatusMethodNotAllowed,
 		},
 	}
 
@@ -317,7 +411,6 @@ func Test_requestHandler(t *testing.T) {
 					capturedMessages.Unlock()
 				}
 			} else {
-
 				// Send a regular HTTP request
 				httpURL := ts.URL + fmt.Sprintf("/v1/%s", test.app)
 				for clientReq, expectedResp := range test.requests {
@@ -327,6 +420,9 @@ func Test_requestHandler(t *testing.T) {
 					c.NoError(err)
 					if test.authHeader != "" {
 						req.Header.Set("Authorization", test.authHeader)
+					}
+					if test.origin != "" {
+						req.Header.Set("Origin", test.origin)
 					}
 
 					resp, err := http.DefaultClient.Do(req)
@@ -346,8 +442,19 @@ func Test_requestHandler(t *testing.T) {
 					_, exists := capturedMessages.clientRequests[clientReq]
 					c.True(exists, "Gateway did not receive expected request: %s", clientReq)
 					capturedMessages.Unlock()
-				}
 
+					// Check CORS headers if applicable
+					if test.origin != "" {
+						for key, value := range test.wantHeader {
+							c.Equal(value, resp.Header.Get(key))
+						}
+					}
+
+					// Check status code if applicable
+					if test.wantStatus != 0 {
+						c.Equal(test.wantStatus, resp.StatusCode)
+					}
+				}
 			}
 		})
 	}

@@ -78,6 +78,25 @@ func methodCheckMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// corsMiddleware handles CORS for the wrapped handler
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, solana-client")
+
+		if r.Method == "OPTIONS" {
+			// Handle preflight request, which is necessary for CORS to work.
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Call the next handler
+		next(w, r)
+	}
+}
+
 // newAPIRouter creates a new APIRouter instance
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
@@ -95,7 +114,7 @@ func newAPIRouter(config Config) *wsRouter {
 	// GET /v1/{app} - handles requests sent to the WSS Manager
 	// `wss` requests are upgraded to a WebSocket connection
 	// `https` requests are proxied to the Gateway
-	wr.mux.HandleFunc("/v1/{app}", wr.requestHandler)
+	wr.mux.HandleFunc("/v1/{app}", corsMiddleware(wr.requestHandler))
 
 	return wr
 }
