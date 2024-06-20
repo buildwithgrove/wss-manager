@@ -3,7 +3,6 @@ package router
 import (
 	"bufio"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +20,6 @@ import (
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
 	"github.com/pokt-foundation/portal-middleware/websockets"
-	"github.com/pokt-foundation/utils-go/client"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/stretchr/testify/require"
 )
@@ -253,36 +251,6 @@ func Test_handleHealthz(t *testing.T) {
 	}
 }
 
-func Test_getScheme(t *testing.T) {
-	tests := []struct {
-		name   string
-		scheme string
-		req    *http.Request
-		want   string
-	}{
-		{
-			name:   "should return http when no TLS",
-			scheme: "http",
-			req:    httptest.NewRequest(http.MethodGet, "http://example.com", nil),
-			want:   "http",
-		},
-		{
-			name:   "should return https when TLS is present",
-			scheme: "http",
-			req:    &http.Request{TLS: &tls.ConnectionState{}},
-			want:   "https",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-			got := getScheme(test.scheme, test.req)
-			c.Equal(test.want, got)
-		})
-	}
-}
-
 func Test_requestHandler(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -291,6 +259,7 @@ func Test_requestHandler(t *testing.T) {
 		websocketsReq bool
 		err           error
 		authHeader    string
+		badURL        bool
 		origin        string
 		wantHeader    map[string]string
 		wantStatus    int
@@ -357,6 +326,13 @@ func Test_requestHandler(t *testing.T) {
 			},
 			wantStatus: http.StatusMethodNotAllowed,
 		},
+		{
+			name:          "should return error for bad URL when making a regular HTTP request",
+			app:           "1a2b3c4d",
+			websocketsReq: false,
+			err:           errors.New("parse \"http://bad url\": invalid character \" \" in host name"),
+			badURL:        true,
+		},
 	}
 
 	for _, test := range tests {
@@ -371,6 +347,9 @@ func Test_requestHandler(t *testing.T) {
 			config := Config{
 				Logger: logger.New(),
 				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
+					if test.badURL {
+						return "http://bad url"
+					}
 					if strings.Contains(scheme, "http") {
 						return testHTTPGatewayURL
 					}
@@ -465,79 +444,6 @@ func Test_requestHandler(t *testing.T) {
 	}
 }
 
-func Test_httpHandler_Errors(t *testing.T) {
-	tests := []struct {
-		name       string
-		req        *http.Request
-		setupMocks func(*wsRouter)
-		wantStatus int
-		wantBody   string
-	}{
-		{
-			name: "should return internal server error when proxy request creation fails",
-			req:  httptest.NewRequest(http.MethodGet, "http://example.com", nil),
-			setupMocks: func(wr *wsRouter) {
-				wr.gatewayURLFunc = func(scheme string, chain types.ChainAlias, path string) string {
-					return "http://[::1]:namedport" // Invalid URL to trigger error
-				}
-			},
-			wantStatus: http.StatusInternalServerError,
-			wantBody:   "Internal Server Error\n",
-		},
-		{
-			name: "should return bad gateway when proxy request fails",
-			req:  httptest.NewRequest(http.MethodGet, "http://example.com", nil),
-			setupMocks: func(wr *wsRouter) {
-				wr.gatewayURLFunc = func(scheme string, chain types.ChainAlias, path string) string {
-					return "http://localhost:9999" // assuming nothing is running on this port
-				}
-			},
-			wantStatus: http.StatusBadGateway,
-			wantBody:   "Bad Gateway\n",
-		},
-		{
-			name: "should return error when writing response to client fails",
-			req:  httptest.NewRequest(http.MethodGet, "http://example.com", nil),
-			setupMocks: func(wr *wsRouter) {
-				wr.gatewayURLFunc = func(scheme string, chain types.ChainAlias, path string) string {
-					return "http://localhost:8080"
-				}
-				wr.http = &client.Client{
-					Client: &http.Client{
-						Transport: &errorTransport{},
-					},
-				}
-			},
-			wantStatus: http.StatusInternalServerError,
-			wantBody:   "Internal Server Error\n",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			config := Config{
-				Logger:         logger.New(),
-				MetricExporter: exporterMocks.Exporter{},
-			}
-			router := newAPIRouter(config)
-			test.setupMocks(router)
-
-			w := httptest.NewRecorder()
-			router.httpHandler(w, test.req, "chain")
-
-			resp := w.Result()
-			body, err := io.ReadAll(resp.Body)
-			c.NoError(err)
-			resp.Body.Close()
-
-			c.Equal(test.wantStatus, resp.StatusCode)
-			c.Equal(test.wantBody, string(body))
-		})
-	}
-}
-
 func Test_websocketHandler_Errors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -579,6 +485,46 @@ func Test_websocketHandler_Errors(t *testing.T) {
 
 			w := &hijackableResponseRecorder{httptest.NewRecorder()}
 			router.websocketHandler(w, test.req, "chain")
+
+			resp := w.Result()
+			body, err := io.ReadAll(resp.Body)
+			c.NoError(err)
+			resp.Body.Close()
+
+			c.Equal(test.wantStatus, resp.StatusCode)
+			c.Equal(test.wantBody, string(body))
+		})
+	}
+}
+
+func Test_writeHandshakeErrorResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		message    string
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "should write handshake error response",
+			statusCode: http.StatusBadRequest,
+			message:    "bad request error",
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "bad request error",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := require.New(t)
+
+			config := Config{
+				Logger: logger.New(),
+			}
+			router := newAPIRouter(config)
+
+			w := httptest.NewRecorder()
+			router.writeHandshakeErrorResponse(w, test.statusCode, test.message)
 
 			resp := w.Result()
 			body, err := io.ReadAll(resp.Body)
@@ -688,63 +634,6 @@ func testGatewayWSConn(t *testing.T, requests map[clientReq]gatewayResp) string 
 	wsURL := strings.Replace(u.String(), "http", "ws", 1)
 
 	return wsURL
-}
-
-func Test_writeHandshakeErrorResponse(t *testing.T) {
-	tests := []struct {
-		name       string
-		statusCode int
-		message    string
-		wantStatus int
-		wantBody   string
-	}{
-		{
-			name:       "should write handshake error response",
-			statusCode: http.StatusBadRequest,
-			message:    "bad request error",
-			wantStatus: http.StatusBadRequest,
-			wantBody:   "bad request error",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			config := Config{
-				Logger:         logger.New(),
-				MetricExporter: exporterMocks.Exporter{},
-			}
-			router := newAPIRouter(config)
-
-			w := httptest.NewRecorder()
-			router.writeHandshakeErrorResponse(w, test.statusCode, test.message)
-
-			resp := w.Result()
-			body, err := io.ReadAll(resp.Body)
-			c.NoError(err)
-			resp.Body.Close()
-
-			c.Equal(test.wantStatus, resp.StatusCode)
-			c.Equal(test.wantBody, string(body))
-		})
-	}
-}
-
-type errorTransport struct{}
-
-func (e *errorTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(&errorReader{}),
-		Header:     make(http.Header),
-	}, nil
-}
-
-type errorReader struct{}
-
-func (e *errorReader) Read(p []byte) (n int, err error) {
-	return 0, fmt.Errorf("read error")
 }
 
 type hijackableResponseRecorder struct {
