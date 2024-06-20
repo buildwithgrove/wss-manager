@@ -938,8 +938,8 @@ github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 h1:Jamvg5psRI
 github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/pokt-foundation/pocket-go v0.19.0 h1:2zULi39LhdhtKa0ZlsGq6VxveghKGSpvTCDcd2xSYm4=
 github.com/pokt-foundation/pocket-go v0.19.0/go.mod h1:TyJgMIbfVF9qhjTMU9u+TeiBwYKLq6+YZhq6POLNeHE=
-github.com/pokt-foundation/portal-http-db/v2 v2.15.6 h1:Y+OylX2MQ8Gy9FMqAvcQjLl1GSdpwVHdzZWKbbBOb9Q=
-github.com/pokt-foundation/portal-http-db/v2 v2.15.6/go.mod h1:5oQJGpaVR3LPeeHjofQ1j1QfppqFHpF0fhEeGvjWAik=
+github.com/pokt-foundation/portal-http-db/v2 v2.16.2 h1:VIZoSgCr/oDMbWpjRHCoIq9Y7DoyF7e7tf25MBdLxmI=
+github.com/pokt-foundation/portal-http-db/v2 v2.16.2/go.mod h1:P+/GlMRX9XIGDoRLZ8fo4sV9B405nc/8SZ5PNkKzsi0=
 github.com/pokt-foundation/portal-middleware v0.0.6-dev h1:fYsjgztrzE4bAbgEQ6gRqichQVFsLlZC2CBsvpogp28=
 github.com/pokt-foundation/portal-middleware v0.0.6-dev/go.mod h1:tnC3OFVHBY3B358xO5mnsyz59EDZqNiLdKw/kUTbcFk=
 github.com/pokt-foundation/utils-go v0.11.1 h1:o/kF4KFaClAz2AvybDrEQR1TpEEx6zwyuGcOlD/aLuY=

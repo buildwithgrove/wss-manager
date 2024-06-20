@@ -6,7 +6,7 @@ replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alp
 
 require (
 	github.com/gorilla/websocket v1.5.1
-	github.com/pokt-foundation/portal-http-db/v2 v2.15.6
+	github.com/pokt-foundation/portal-http-db/v2 v2.16.2
 	// TODO: update portal-middleware to non-dev tag when Gateway PRs are reviewed and published
 	github.com/pokt-foundation/portal-middleware v0.0.6-dev
 	github.com/pokt-foundation/utils-go v0.11.1

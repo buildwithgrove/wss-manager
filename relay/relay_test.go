@@ -160,3 +160,29 @@ func TestID_MarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestRelay_IsError(t *testing.T) {
+	tests := []struct {
+		name     string
+		relay    Relay
+		expected bool
+	}{
+		{
+			name:     "should return true when error is not nil",
+			relay:    Relay{Error: &RelayError{Code: 1, Message: "error"}},
+			expected: true,
+		},
+		{
+			name:     "should return false when error is nil",
+			relay:    Relay{Error: nil},
+			expected: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := test.relay.IsError()
+			assert.Equal(t, test.expected, result)
+		})
+	}
+}
