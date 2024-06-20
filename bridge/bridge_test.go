@@ -373,12 +373,11 @@ func Test_reconnectToGateway(t *testing.T) {
 			// Create a mock server for client connection
 			clientServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
+				_, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					t.Error("Error during connection upgradation:", err)
 					return
 				}
-				conn.Close()
 			}))
 			defer clientServer.Close()
 
@@ -389,12 +388,11 @@ func Test_reconnectToGateway(t *testing.T) {
 			// Create a mock server for gateway connection
 			gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
+				_, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					t.Error("Error during connection upgradation:", err)
 					return
 				}
-				conn.Close()
 			}))
 			defer gatewayServer.Close()
 
