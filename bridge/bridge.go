@@ -129,34 +129,7 @@ func (b *Bridge) Run() {
 	b.log.Info("bridge operation started successfully")
 
 	// If close signal is received, stop the bridge and close both connections
-	stopErr := <-b.stopChan
-	if err := b.cleanup(stopErr); err != nil {
-		b.log.Error("error cleaning up bridge:", slog.String("error", err.Error()))
-	}
-}
-
-// cleanup closes the client and gateway connections
-func (b *Bridge) cleanup(err error) error {
-	closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, err.Error())
-
-	// Close the client connection with the gateway and send a reason for the closure
-	if err := b.clientConn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
-		b.log.Error("error writing close message to client connection:", slog.String("error", err.Error()))
-	}
-	if err := b.clientConn.Close(); err != nil {
-		b.log.Error("error closing client connection:", slog.String("error", err.Error()))
-	}
-
-	// Close the gateway connection with the client and send a reason for the closure
-	if err := b.gatewayConn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
-		b.log.Error("error writing close message to gateway connection:", slog.String("error", err.Error()))
-	}
-	if err := b.gatewayConn.Close(); err != nil {
-		b.log.Error("error closing gateway connection:", slog.String("error", err.Error()))
-	}
-
-	b.log.Info("bridge operation stopped successfully")
-	return nil
+	<-b.stopChan
 }
 
 /* ---------- Private methods - Message loop ---------- */

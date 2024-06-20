@@ -8,7 +8,7 @@ require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/pokt-foundation/portal-http-db/v2 v2.16.2
 	// TODO: update portal-middleware to non-dev tag when Gateway PRs are reviewed and published
-	github.com/pokt-foundation/portal-middleware v0.0.7-dev
+	github.com/pokt-foundation/portal-middleware v0.0.9-dev
 	github.com/pokt-foundation/utils-go v0.11.1
 	github.com/stretchr/testify v1.9.0
 )

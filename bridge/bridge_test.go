@@ -277,65 +277,6 @@ func Test_Bridge_Run(t *testing.T) {
 	}
 }
 
-func Test_cleanup(t *testing.T) {
-	tests := []struct {
-		name          string
-		expectedError bool
-	}{
-		{
-			name:          "should cleanup without errors",
-			expectedError: false,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			// Create a mock server for client connection
-			clientServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer clientServer.Close()
-
-			clientURL := "ws" + strings.TrimPrefix(clientServer.URL, "http")
-			clientConn, _, err := websocket.DefaultDialer.Dial(clientURL, nil)
-			c.NoError(err)
-
-			// Create a mock server for gateway connection
-			gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer gatewayServer.Close()
-
-			gatewayURL := "ws" + strings.TrimPrefix(gatewayServer.URL, "http")
-			gatewayConn, _, err := websocket.DefaultDialer.Dial(gatewayURL, nil)
-			c.NoError(err)
-
-			bridge := newTestBridge(clientConn, gatewayConn, gatewayURL, 10)
-			err = bridge.cleanup(fmt.Errorf("test error"))
-
-			if test.expectedError {
-				c.Error(err)
-			} else {
-				c.NoError(err)
-			}
-		})
-	}
-}
-
 func Test_reconnectToGateway(t *testing.T) {
 	tests := []struct {
 		name                    string
