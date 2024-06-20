@@ -32,10 +32,10 @@ const (
 
 var (
 	// Router Labels
-	LabelsRelay = []string{"relay"}
+	LabelsRelay = []string{"relay", "chain_alias", "error"}
 
 	// Bridge Labels
-	LabelsWSRelay       = []string{"ws-relay"}
+	LabelsWSRelay       = []string{"ws_relay"}
 	LabelsReconnection  = []string{"reconnection"}
 	LabelsSubscriptions = []string{"subscription"}
 )

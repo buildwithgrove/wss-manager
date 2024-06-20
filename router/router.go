@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/metrics/exporter"
@@ -117,7 +118,7 @@ func newAPIRouter(config Config) *wsRouter {
 	// GET /healthz - handleHealthz returns a simple health check response
 	wr.mux.HandleFunc("GET /healthz", methodCheckMiddleware(wr.handleHealthz))
 
-	// GET /v1/{app} - handles requests sent to the WSS Manager
+	// * /v1/{app} - handles requests sent to the WSS Manager
 	// `wss` requests are upgraded to a WebSocket connection
 	// `https` requests are proxied to the Gateway
 	wr.mux.HandleFunc("/v1/{app}", corsMiddleware(wr.requestHandler))
@@ -193,12 +194,27 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 		scheme += "s"
 	}
 
+	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).IncWithLabels(prometheus.Labels{
+		"relay":       metrics.LabelAttempt,
+		"chain_alias": string(chain),
+	})
+
 	gatewayURL, err := url.Parse(wr.gatewayURLFunc(scheme, chain, req.URL.Path))
 	if err != nil {
 		wr.logger.Error("error parsing gateway URL", slog.String("error", err.Error()))
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).IncWithLabels(prometheus.Labels{
+			"relay":       metrics.LabelError,
+			"chain_alias": string(chain),
+			"error":       err.Error(),
+		})
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+
+	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).IncWithLabels(prometheus.Labels{
+		"relay":       metrics.LabelSuccess,
+		"chain_alias": string(chain),
+	})
 
 	httputil.NewSingleHostReverseProxy(gatewayURL).ServeHTTP(w, req)
 }
@@ -208,7 +224,10 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	// add the `-ws` suffix to the chain to get the WebSocket chain alias
 	chain += "-ws"
 
-	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelAttempt)
+	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
+		"relay":       metrics.LabelAttempt,
+		"chain_alias": string(chain),
+	})
 
 	// upgrade the client connection to a websocket connection
 	upgrader := websocket.Upgrader{
@@ -218,7 +237,11 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	if err != nil {
 		errString := fmt.Sprintf("error upgrading connection: %s", err.Error())
 		wr.logger.Error(errString)
-		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelError)
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
+			"relay":       metrics.LabelError,
+			"chain_alias": string(chain),
+			"error":       err.Error(),
+		})
 		wr.writeHandshakeErrorResponse(w, http.StatusBadRequest, errString)
 		return
 	}
@@ -240,13 +263,21 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	})
 	if err != nil {
 		wr.logger.Error(fmt.Sprintf("error creating bridge: %s", err.Error()))
-		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelError)
+		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
+			"relay":       metrics.LabelError,
+			"chain_alias": string(chain),
+			"error":       err.Error(),
+		})
 
 		// if gateway connection fails, close the connection with the client and send the reason for the closure
 		closeMsg := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error())
 		if writeErr := clientConn.WriteMessage(websocket.CloseMessage, closeMsg); writeErr != nil {
 			wr.logger.Error(fmt.Sprintf("error writing close message to client: %s", writeErr.Error()))
-			wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelError)
+			wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
+				"relay":       metrics.LabelError,
+				"chain_alias": string(chain),
+				"error":       writeErr.Error(),
+			})
 		}
 		clientConn.Close()
 
@@ -256,7 +287,10 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	// run the bridge between client websocket and gateway websocket
 	go bridge.Run()
 
-	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).Inc(metrics.LabelSuccess)
+	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
+		"relay":       metrics.LabelSuccess,
+		"chain_alias": string(chain),
+	})
 }
 
 // writeHandshakeErrorResponse writes a standard HTTP error response to the client.

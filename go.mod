@@ -13,6 +13,8 @@ require (
 	github.com/stretchr/testify v1.9.0
 )
 
+require github.com/prometheus/client_golang v1.18.0
+
 require (
 	cloud.google.com/go v0.112.0 // indirect
 	cloud.google.com/go/compute v1.24.0 // indirect
@@ -157,7 +159,6 @@ require (
 	github.com/pokt-foundation/pocket-go v0.19.0 // indirect
 	github.com/pokt-network/poktroll v0.0.3-0.20240531080249-488c0d2502c5 // indirect
 	github.com/pokt-network/smt v0.10.2 // indirect
-	github.com/prometheus/client_golang v1.18.0 // indirect
 	github.com/prometheus/client_model v0.6.0 // indirect
 	github.com/prometheus/common v0.47.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
