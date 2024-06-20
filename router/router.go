@@ -4,10 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"strings"
 	"time"
 
@@ -168,14 +169,6 @@ func isWebSocketRequest(req *http.Request) bool {
 	return upgradeHeader == "websocket" && strings.Contains(connectionHeader, "upgrade")
 }
 
-// getScheme returns the scheme of the request based on the presence of a TLS connection
-func getScheme(scheme string, req *http.Request) string {
-	if req.TLS != nil {
-		scheme += "s"
-	}
-	return scheme
-}
-
 // GET /v1/{app} - handles requests sent to the WSS Manager
 func (wr *wsRouter) requestHandler(w http.ResponseWriter, req *http.Request) {
 	chainDomain := types.ChainDomain(req.Host)
@@ -190,45 +183,19 @@ func (wr *wsRouter) requestHandler(w http.ResponseWriter, req *http.Request) {
 
 // httpHandler handles HTTP requests by proxying them to the Gateway and returning the response to the user
 func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
-	scheme := getScheme("http", req)
-	url := wr.gatewayURLFunc(scheme, chain, req.URL.Path)
-
-	ctx, cancel := context.WithTimeout(req.Context(), 10*time.Second)
-	defer cancel()
-
-	proxyReq, err := http.NewRequestWithContext(ctx, req.Method, url, req.Body)
-	if err != nil {
-		wr.logger.Error("error creating proxy request", slog.String("error", err.Error()))
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-	proxyReq.Header = req.Header
-
-	resp, err := wr.http.Client.Do(proxyReq)
-	if err != nil {
-		wr.logger.Error("error making proxy request", slog.String("error", err.Error()))
-		http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	for k, vv := range resp.Header {
-		w.Header()[k] = vv
+	scheme := "http"
+	if req.TLS != nil {
+		scheme += "s"
 	}
 
-	var buf strings.Builder
-	_, err = io.Copy(&buf, resp.Body)
+	gatewayURL, err := url.Parse(wr.gatewayURLFunc(scheme, chain, req.URL.Path))
 	if err != nil {
-		wr.logger.Error("error writing response to client", slog.String("error", err.Error()))
+		wr.logger.Error("error parsing gateway URL", slog.String("error", err.Error()))
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	w.WriteHeader(resp.StatusCode)
-	_, err = w.Write([]byte(buf.String()))
-	if err != nil {
-		wr.logger.Error("error writing response to client", slog.String("error", err.Error()))
-	}
+	httputil.NewSingleHostReverseProxy(gatewayURL).ServeHTTP(w, req)
 }
 
 // websocketHandler handles WebSocket connections by upgrading the connection to a WebSocket connection and creating a bridge
