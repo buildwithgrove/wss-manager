@@ -20,24 +20,24 @@ const (
 	NameGatewayRelay = "gateway-relay"
 	NameReconnect    = "reconnect"
 	NameSubscribe    = "subscribe"
+	NameResubscribe  = "resubscribe"
 
 	LabelErrorWrite   = "write_error"
 	LabelErrorRead    = "read_error"
 	LabelErrorMarshal = "marshal_error"
 	LabelErrorProcess = "process_error"
 
-	LabelSubscriptionAdd    = "subscription_add"
-	LabelSubscriptionRemove = "subscription_remove"
+	LabelActiveSubscriptions = "active_subscriptions"
 )
 
 var (
 	// Router Labels
-	LabelsRelay = []string{"relay", "chain_alias", "error"}
+	LabelsRelay = []string{"outcome", "chain_alias", "error"}
 
 	// Bridge Labels
-	LabelsWSRelay       = []string{"ws_relay"}
-	LabelsReconnection  = []string{"reconnection"}
-	LabelsSubscriptions = []string{"subscription"}
+	LabelsWSRelay       = []string{"outcome", "error"}
+	LabelsReconnection  = []string{"outcome", "error"}
+	LabelsSubscriptions = []string{"outcome", "sub_id", "error"}
 )
 
 // NewMetricExporter registers all metrics to the metrics exporter

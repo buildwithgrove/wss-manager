@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/pokt-foundation/portal-middleware/metrics/exporter"
 	"github.com/pokt-foundation/portal-middleware/relay"
@@ -195,7 +196,10 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 	clientMsgBytes, err := json.Marshal(clientMsg)
 	if err != nil {
 		b.log.Error("error marshalling client message:", slog.String("error", err.Error()))
-		b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).Inc(metrics.LabelError)
+		b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).IncWithLabels(prometheus.Labels{
+			"outcome": metrics.LabelError,
+			"error":   err.Error(),
+		})
 		return
 	}
 
@@ -203,7 +207,10 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 	if err != nil {
 		// An error writing means the connection is broken and the bridge should be stopped
 		b.log.Error("error writing to gateway websocket", slog.String("error", err.Error()))
-		b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).Inc(metrics.LabelError)
+		b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).IncWithLabels(prometheus.Labels{
+			"outcome": metrics.LabelError,
+			"error":   err.Error(),
+		})
 		b.stopChan <- fmt.Errorf("error writing to gateway websocket: %w", err)
 		return
 	}
@@ -219,7 +226,10 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 	processedMsg, err := b.processGatewayResponse(msg.Data)
 	if err != nil {
 		b.log.Error("error processing gateway response:", slog.String("error", err.Error()))
-		b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).Inc(metrics.LabelError)
+		b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).IncWithLabels(prometheus.Labels{
+			"outcome": metrics.LabelError,
+			"error":   err.Error(),
+		})
 		return
 	}
 
@@ -232,7 +242,10 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 	if err != nil {
 		// An error writing means the connection is broken and the bridge should be stopped
 		b.log.Error("error writing to client websocket", slog.String("error", err.Error()))
-		b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).Inc(metrics.LabelError)
+		b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).IncWithLabels(prometheus.Labels{
+			"outcome": metrics.LabelError,
+			"error":   err.Error(),
+		})
 		b.stopChan <- fmt.Errorf("error writing to client websocket: %w", err)
 		return
 	}
@@ -274,7 +287,7 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		b.subscriptions[subscription.ID] = subscription
 		b.subsLock.Unlock()
 
-		b.metrics.Gauge(metrics.CategoryBridge, metrics.NameSubscribe).Inc(metrics.LabelSubscriptionAdd)
+		b.metrics.Gauge(metrics.CategoryBridge, metrics.NameSubscribe).Inc(metrics.LabelActiveSubscriptions)
 
 	// If response is a unsubscription confirmation remove the subscription from the subscriptions map
 	case websockets.SubTypeUnsubscribe:
@@ -284,7 +297,7 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		delete(b.subscriptions, *unsubID)
 		b.subsLock.Unlock()
 
-		b.metrics.Gauge(metrics.CategoryBridge, metrics.NameSubscribe).Sub(metrics.LabelSubscriptionRemove, 1)
+		b.metrics.Gauge(metrics.CategoryBridge, metrics.NameSubscribe).Sub(metrics.LabelActiveSubscriptions, 1)
 	}
 
 	return nil
@@ -306,7 +319,10 @@ func (b *Bridge) reconnectToGateway() error {
 
 			if attempt == b.maxReconnectionAttempts {
 				b.log.Error("max reconnect attempts reached", slog.Int("maxReconnectionAttempts", b.maxReconnectionAttempts))
-				b.metrics.Counter(metrics.CategoryBridge, metrics.NameReconnect).Inc(metrics.LabelError)
+				b.metrics.Counter(metrics.CategoryBridge, metrics.NameReconnect).IncWithLabels(prometheus.Labels{
+					"outcome": metrics.LabelError,
+					"error":   err.Error(),
+				})
 				return err
 			}
 
@@ -346,12 +362,20 @@ func (b *Bridge) resumeSubscriptions() {
 		var relay relay.JsonRpcRelay
 		if err := json.Unmarshal(sub.RequestBody, &relay); err != nil {
 			b.log.Error("error unmarshalling original subscription request body:", slog.String("error", err.Error()))
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NameResubscribe).IncWithLabels(prometheus.Labels{
+				"outcome": metrics.LabelError,
+				"error":   err.Error(),
+			})
 			continue
 		}
 
 		subReqBody, err := json.Marshal(relay)
 		if err != nil {
 			b.log.Error("error marshalling original subscription request body:", slog.String("error", err.Error()))
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NameResubscribe).IncWithLabels(prometheus.Labels{
+				"outcome": metrics.LabelError,
+				"error":   err.Error(),
+			})
 			continue
 		}
 
@@ -360,15 +384,27 @@ func (b *Bridge) resumeSubscriptions() {
 		clientMsgBytes, err := json.Marshal(clientMsg)
 		if err != nil {
 			b.log.Error("error marshalling original subscription request body:", slog.String("error", err.Error()))
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NameResubscribe).IncWithLabels(prometheus.Labels{
+				"outcome": metrics.LabelError,
+				"error":   err.Error(),
+			})
 			continue
 		}
 
 		err = b.gatewayConn.WriteMessage(websocket.TextMessage, clientMsgBytes)
 		if err != nil {
 			b.log.Error("failed to resume subscription", slog.String("error", err.Error()))
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NameResubscribe).IncWithLabels(prometheus.Labels{
+				"outcome": metrics.LabelError,
+				"error":   err.Error(),
+			})
 			continue
 		}
 
 		b.log.Info("resumed subscription", slog.String("subscription", string(sub.ID)))
+		b.metrics.Counter(metrics.CategoryBridge, metrics.NameResubscribe).IncWithLabels(prometheus.Labels{
+			"outcome": metrics.LabelSuccess,
+			"sub_id":  string(sub.ID),
+		})
 	}
 }

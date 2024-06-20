@@ -195,7 +195,7 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	}
 
 	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).IncWithLabels(prometheus.Labels{
-		"relay":       metrics.LabelAttempt,
+		"outcome":     metrics.LabelAttempt,
 		"chain_alias": string(chain),
 	})
 
@@ -203,7 +203,7 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	if err != nil {
 		wr.logger.Error("error parsing gateway URL", slog.String("error", err.Error()))
 		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).IncWithLabels(prometheus.Labels{
-			"relay":       metrics.LabelError,
+			"outcome":     metrics.LabelError,
 			"chain_alias": string(chain),
 			"error":       err.Error(),
 		})
@@ -212,7 +212,7 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	}
 
 	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameHTTPRelay).IncWithLabels(prometheus.Labels{
-		"relay":       metrics.LabelSuccess,
+		"outcome":     metrics.LabelSuccess,
 		"chain_alias": string(chain),
 	})
 
@@ -225,7 +225,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	chain += "-ws"
 
 	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
-		"relay":       metrics.LabelAttempt,
+		"outcome":     metrics.LabelAttempt,
 		"chain_alias": string(chain),
 	})
 
@@ -238,7 +238,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 		errString := fmt.Sprintf("error upgrading connection: %s", err.Error())
 		wr.logger.Error(errString)
 		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
-			"relay":       metrics.LabelError,
+			"outcome":     metrics.LabelError,
 			"chain_alias": string(chain),
 			"error":       err.Error(),
 		})
@@ -264,7 +264,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	if err != nil {
 		wr.logger.Error(fmt.Sprintf("error creating bridge: %s", err.Error()))
 		wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
-			"relay":       metrics.LabelError,
+			"outcome":     metrics.LabelError,
 			"chain_alias": string(chain),
 			"error":       err.Error(),
 		})
@@ -274,7 +274,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 		if writeErr := clientConn.WriteMessage(websocket.CloseMessage, closeMsg); writeErr != nil {
 			wr.logger.Error(fmt.Sprintf("error writing close message to client: %s", writeErr.Error()))
 			wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
-				"relay":       metrics.LabelError,
+				"outcome":     metrics.LabelError,
 				"chain_alias": string(chain),
 				"error":       writeErr.Error(),
 			})
@@ -288,7 +288,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	go bridge.Run()
 
 	wr.metrics.Counter(metrics.CategoryRelay, metrics.NameWSRelay).IncWithLabels(prometheus.Labels{
-		"relay":       metrics.LabelSuccess,
+		"outcome":     metrics.LabelSuccess,
 		"chain_alias": string(chain),
 	})
 }
