@@ -40,7 +40,7 @@ type (
 
 		clientConn  *websockets.Connection
 		gatewayConn *websockets.Connection
-		msgChan     chan websockets.Message
+		msgChan     <-chan websockets.Message
 		stopChan    chan error
 
 		subscriptions map[websockets.SubscriptionID]*websockets.Subscription

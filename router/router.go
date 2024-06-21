@@ -224,7 +224,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	// create a new bridge, which includes creating a new gateway connection
 	bridge, err := bridge.NewBridge(bridge.Config{
 		ClientConn:              clientConn,
-		GatewayURL:              wr.gatewayURLFunc("ws", chain, req.URL.Path),
+		GatewayURL:              wr.gatewayURLFunc("wss", chain, req.URL.Path),
 		Headers:                 headers,
 		MaxReconnectionAttempts: wr.maxReconnectionAttempts,
 		Log:                     wr.logger,
