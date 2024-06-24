@@ -44,7 +44,8 @@ type (
 		stopChan    chan error
 
 		subscriptions map[websockets.SubscriptionID]*websockets.Subscription
-		subsLock      sync.RWMutex
+
+		mu sync.RWMutex
 
 		log *slog.Logger
 	}
@@ -79,7 +80,7 @@ func NewBridge(config Config) (*Bridge, error) {
 		stopChan: stopChan,
 
 		subscriptions: make(map[websockets.SubscriptionID]*websockets.Subscription),
-		subsLock:      sync.RWMutex{},
+		mu:            sync.RWMutex{},
 
 		log: log,
 	}
@@ -225,17 +226,17 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 	case websockets.SubTypeSubscribe:
 		subscription := gatewayMsg.Subscription
 
-		b.subsLock.Lock()
+		b.mu.Lock()
 		b.subscriptions[subscription.ID] = subscription
-		b.subsLock.Unlock()
+		b.mu.Unlock()
 
 	// If response is a unsubscription confirmation remove the subscription from the subscriptions map
 	case websockets.SubTypeUnsubscribe:
 		unsubID := gatewayMsg.Unsubscription
 
-		b.subsLock.Lock()
+		b.mu.Lock()
 		delete(b.subscriptions, *unsubID)
-		b.subsLock.Unlock()
+		b.mu.Unlock()
 	}
 
 	return nil
@@ -270,7 +271,10 @@ func (b *Bridge) reconnectToGateway() error {
 			continue
 		}
 
-		b.gatewayConn.Conn = gatewayConn
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		b.gatewayConn.Set(gatewayConn)
 
 		b.log.Info("Successfully reconnected to gateway")
 
@@ -286,9 +290,6 @@ func (b *Bridge) reconnectToGateway() error {
 }
 
 func (b *Bridge) resumeSubscriptions() {
-	b.subsLock.Lock()
-	defer b.subsLock.Unlock()
-
 	for _, sub := range b.subscriptions {
 		var relay relay.JsonRpcRelay
 		if err := json.Unmarshal(sub.RequestBody, &relay); err != nil {

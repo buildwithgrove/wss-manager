@@ -54,7 +54,7 @@ func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, m
 		stopChan: make(chan error),
 
 		subscriptions: make(map[websockets.SubscriptionID]*websockets.Subscription),
-		subsLock:      sync.RWMutex{},
+		mu:            sync.RWMutex{},
 
 		log: log,
 	}
@@ -343,9 +343,9 @@ func Test_reconnectToGateway(t *testing.T) {
 			c.NoError(err)
 			bridge := newTestBridge(clientConn, gatewayConn, gatewayURL, test.maxReconnectionAttempts)
 
-			bridge.subsLock.Lock()
+			bridge.mu.Lock()
 			bridge.subscriptions = test.existingSubscriptions
-			bridge.subsLock.Unlock()
+			bridge.mu.Unlock()
 
 			// Shut down the gateway server to simulate connection failure
 			if test.expectedError != nil {
@@ -378,9 +378,9 @@ func Test_reconnectToGateway(t *testing.T) {
 			<-time.After(100 * time.Millisecond)
 
 			if test.existingSubscriptions != nil {
-				bridge.subsLock.Lock()
+				bridge.mu.Lock()
 				c.Equal(test.existingSubscriptions, bridge.subscriptions)
-				bridge.subsLock.Unlock()
+				bridge.mu.Unlock()
 			}
 		})
 	}
