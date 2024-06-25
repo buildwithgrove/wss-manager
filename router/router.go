@@ -32,6 +32,7 @@ type (
 		gatewayURLFunc          GatewayURLFunc
 		maxReconnectionAttempts int
 		imageTag                string
+		tls                     bool
 	}
 
 	Config struct {
@@ -40,6 +41,7 @@ type (
 		MaxReconnectionAttempts int
 		ImageTag                string
 		Port                    string
+		TLS                     bool
 		Logger                  *logger.Logger
 	}
 
@@ -111,6 +113,7 @@ func newAPIRouter(config Config) *wsRouter {
 		metrics:                 config.MetricExporter,
 		gatewayURLFunc:          config.GatewayURLFunc,
 		maxReconnectionAttempts: config.MaxReconnectionAttempts,
+		tls:                     config.TLS,
 		imageTag:                config.ImageTag,
 		logger:                  config.Logger,
 	}
@@ -190,7 +193,7 @@ func (wr *wsRouter) requestHandler(w http.ResponseWriter, req *http.Request) {
 // httpHandler handles HTTP requests by proxying them to the Gateway and returning the response to the user
 func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
 	scheme := "http"
-	if req.TLS != nil {
+	if wr.tls {
 		scheme += "s"
 	}
 
@@ -221,6 +224,11 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 
 // websocketHandler handles WebSocket connections by upgrading the connection to a WebSocket connection and creating a bridge
 func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
+	scheme := "ws"
+	if wr.tls {
+		scheme += "s"
+	}
+
 	// add the `-ws` suffix to the chain to get the WebSocket chain alias
 	chain += "-ws"
 
@@ -255,7 +263,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	// create a new bridge, which includes creating a new gateway connection
 	bridge, err := bridge.NewBridge(bridge.Config{
 		ClientConn:              clientConn,
-		GatewayURL:              wr.gatewayURLFunc("ws", chain, req.URL.Path),
+		GatewayURL:              wr.gatewayURLFunc(scheme, chain, req.URL.Path),
 		MetricExporter:          wr.metrics,
 		Headers:                 headers,
 		MaxReconnectionAttempts: wr.maxReconnectionAttempts,

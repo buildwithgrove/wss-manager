@@ -20,6 +20,8 @@ const (
 	defaultMaxReconnectionAttempts = 100
 	port                           = "PORT"
 	defaultPort                    = "8100"
+	tls                            = "TLS"
+	defaultTLS                     = true
 	imageTag                       = "IMAGE_TAG"
 	defaultImageTag                = "development"
 
@@ -33,6 +35,7 @@ type options struct {
 	// Optional env variables
 	maxReconnectionAttempts int
 	port                    string
+	tls                     bool
 	imageTag                string
 }
 
@@ -43,6 +46,7 @@ func gatherOptions() options {
 		// Optional env variables
 		maxReconnectionAttempts: int(environment.GetInt64(maxReconnectionAttempts, defaultMaxReconnectionAttempts)),
 		port:                    environment.GetString(port, defaultPort),
+		tls:                     environment.GetBool(tls, defaultTLS),
 		imageTag:                environment.GetString(imageTag, defaultImageTag),
 	}
 }
@@ -72,6 +76,7 @@ func main() {
 		MetricExporter:          metricExporter,
 		MaxReconnectionAttempts: options.maxReconnectionAttempts,
 		Port:                    options.port,
+		TLS:                     options.tls,
 		ImageTag:                options.imageTag,
 		Logger:                  logger,
 	})

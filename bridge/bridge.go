@@ -45,11 +45,12 @@ type (
 
 		clientConn  *websockets.Connection
 		gatewayConn *websockets.Connection
-		msgChan     chan websockets.Message
+		msgChan     <-chan websockets.Message
 		stopChan    chan error
 
 		subscriptions map[websockets.SubscriptionID]*websockets.Subscription
-		subsLock      sync.RWMutex
+
+		mu sync.RWMutex
 
 		log *slog.Logger
 	}
@@ -86,7 +87,7 @@ func NewBridge(config Config) (*Bridge, error) {
 		stopChan: stopChan,
 
 		subscriptions: make(map[websockets.SubscriptionID]*websockets.Subscription),
-		subsLock:      sync.RWMutex{},
+		mu:            sync.RWMutex{},
 
 		log: log,
 	}
@@ -136,34 +137,7 @@ func (b *Bridge) Run() {
 	b.log.Info("bridge operation started successfully")
 
 	// If close signal is received, stop the bridge and close both connections
-	stopErr := <-b.stopChan
-	if err := b.cleanup(stopErr); err != nil {
-		b.log.Error("error cleaning up bridge:", slog.String("error", err.Error()))
-	}
-}
-
-// cleanup closes the client and gateway connections
-func (b *Bridge) cleanup(err error) error {
-	closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, err.Error())
-
-	// Close the client connection with the gateway and send a reason for the closure
-	if err := b.clientConn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
-		b.log.Error("error writing close message to client connection:", slog.String("error", err.Error()))
-	}
-	if err := b.clientConn.Close(); err != nil {
-		b.log.Error("error closing client connection:", slog.String("error", err.Error()))
-	}
-
-	// Close the gateway connection with the client and send a reason for the closure
-	if err := b.gatewayConn.WriteMessage(websocket.CloseMessage, closeMsg); err != nil {
-		b.log.Error("error writing close message to gateway connection:", slog.String("error", err.Error()))
-	}
-	if err := b.gatewayConn.Close(); err != nil {
-		b.log.Error("error closing gateway connection:", slog.String("error", err.Error()))
-	}
-
-	b.log.Info("bridge operation stopped successfully")
-	return nil
+	<-b.stopChan
 }
 
 /* ---------- Private methods - Message loop ---------- */
@@ -283,9 +257,9 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 	case websockets.SubTypeSubscribe:
 		subscription := gatewayMsg.Subscription
 
-		b.subsLock.Lock()
+		b.mu.Lock()
 		b.subscriptions[subscription.ID] = subscription
-		b.subsLock.Unlock()
+		b.mu.Unlock()
 
 		b.metrics.Gauge(metrics.CategoryBridge, metrics.NameSubscribe).Inc(metrics.LabelActiveSubscriptions)
 
@@ -293,11 +267,9 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 	case websockets.SubTypeUnsubscribe:
 		unsubID := gatewayMsg.Unsubscription
 
-		b.subsLock.Lock()
+		b.mu.Lock()
 		delete(b.subscriptions, *unsubID)
-		b.subsLock.Unlock()
-
-		b.metrics.Gauge(metrics.CategoryBridge, metrics.NameSubscribe).Sub(metrics.LabelActiveSubscriptions, 1)
+		b.mu.Unlock()
 	}
 
 	return nil
@@ -338,7 +310,10 @@ func (b *Bridge) reconnectToGateway() error {
 			continue
 		}
 
-		b.gatewayConn.Conn = gatewayConn
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		b.gatewayConn.Set(gatewayConn)
 
 		b.log.Info("Successfully reconnected to gateway")
 		b.metrics.Counter(metrics.CategoryBridge, metrics.NameReconnect).Inc(metrics.LabelSuccess)
@@ -355,9 +330,6 @@ func (b *Bridge) reconnectToGateway() error {
 }
 
 func (b *Bridge) resumeSubscriptions() {
-	b.subsLock.Lock()
-	defer b.subsLock.Unlock()
-
 	for _, sub := range b.subscriptions {
 		var relay relay.JsonRpcRelay
 		if err := json.Unmarshal(sub.RequestBody, &relay); err != nil {
