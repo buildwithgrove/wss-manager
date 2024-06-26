@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,27 +46,28 @@ func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, m
 	log := logger.New().With("component", "bridge")
 
 	b := &Bridge{
-		gatewayURL:              gatewayURL,
-		headers:                 http.Header{},
-		maxReconnectionAttempts: maxReconnectionAttempts,
-
-		msgChan:  msgChan,
-		stopChan: make(chan error),
-
+		msgChan:       msgChan,
+		stopChan:      make(chan error),
 		subscriptions: make(map[websockets.SubscriptionID]*websockets.Subscription),
 		mu:            sync.RWMutex{},
+		metrics:       exporterMocks.Exporter{},
+		log:           log,
+	}
 
-		metrics: exporterMocks.Exporter{},
-		log:     log,
+	reconnectConfig := &websockets.ReconnectConfig{
+		GatewayURL:              gatewayURL,
+		Headers:                 http.Header{},
+		MaxReconnectionAttempts: maxReconnectionAttempts,
+		SubsFunc:                b.resumeSubscriptions,
 	}
 
 	b.gatewayConn = websockets.NewConnection(websockets.ConnConfig{
-		Conn:          gatewayConn,
-		Source:        websockets.SourceBackend,
-		ReconnectFunc: b.reconnectToGateway,
-		MsgChan:       msgChan,
-		StopChan:      stopChan,
-		Log:           log.With("conn", "gateway"),
+		Conn:            gatewayConn,
+		Source:          websockets.SourceBackend,
+		MsgChan:         msgChan,
+		StopChan:        stopChan,
+		ReconnectConfig: reconnectConfig,
+		Log:             log.With("conn", "gateway"),
 	})
 	b.clientConn = websockets.NewConnection(websockets.ConnConfig{
 		Conn:     clientConn,
@@ -161,9 +161,6 @@ func Test_NewBridge(t *testing.T) {
 				c.NoError(err)
 				c.NotNil(bridge)
 				c.NotNil(bridge.clientConn)
-				c.Equal(test.config.GatewayURL, bridge.gatewayURL)
-				c.Equal(test.config.Headers, bridge.headers)
-				c.Equal(test.config.MaxReconnectionAttempts, bridge.maxReconnectionAttempts)
 				c.NotNil(bridge.stopChan)
 				c.NotNil(bridge.subscriptions)
 				if test.expectedGatewayConnNil {
@@ -281,33 +278,28 @@ func Test_Bridge_Run(t *testing.T) {
 	}
 }
 
-func Test_reconnectToGateway(t *testing.T) {
+func Test_resumeSubscriptions(t *testing.T) {
 	tests := []struct {
-		name                    string
-		maxReconnectionAttempts int
-		existingSubscriptions   map[websockets.SubscriptionID]*websockets.Subscription
-		expectedError           error
+		name                  string
+		existingSubscriptions map[websockets.SubscriptionID]*websockets.Subscription
+		expectedSubscriptions map[websockets.SubscriptionID]*websockets.Subscription
+		expectedResubMsg      []byte
 	}{
 		{
-			name:                    "should reconnect to gateway successfully",
-			maxReconnectionAttempts: 3,
-			expectedError:           nil,
-		},
-		{
-			name:                    "should reconnect and re-establish subscriptions",
-			maxReconnectionAttempts: 3,
+			name: "should resume subscriptions successfully",
 			existingSubscriptions: map[websockets.SubscriptionID]*websockets.Subscription{
 				"0x1": {
 					ID:          "0x1",
 					RequestBody: []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`),
 				},
 			},
-			expectedError: nil,
-		},
-		{
-			name:                    "should fail to reconnect to gateway after max attempts",
-			maxReconnectionAttempts: 3,
-			expectedError:           fmt.Errorf("failed to reconnect to gateway after 3 attempts"),
+			expectedSubscriptions: map[websockets.SubscriptionID]*websockets.Subscription{
+				"0x1": {
+					ID:          "0x1",
+					RequestBody: []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`),
+				},
+			},
+			expectedResubMsg: []byte(`{"Message":{"id":1,"jsonrpc":"2.0","method":"eth_subscribe","params":["newHeads"]},"ResubscribeID":"0x1"}`),
 		},
 	}
 
@@ -330,14 +322,27 @@ func Test_reconnectToGateway(t *testing.T) {
 			clientConn, _, err := websocket.DefaultDialer.Dial(clientURL, nil)
 			c.NoError(err)
 
+			receivedMsgs := make(chan []byte)
+
 			// Create a mock server for gateway connection
 			gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				upgrader := websocket.Upgrader{}
-				_, err := upgrader.Upgrade(w, r, nil)
+				conn, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					t.Error("Error during connection upgradation:", err)
 					return
 				}
+
+				go func() {
+					for {
+						_, message, err := conn.ReadMessage()
+						if err != nil {
+							t.Error("Error reading message:", err)
+							return
+						}
+						receivedMsgs <- message
+					}
+				}()
 			}))
 			defer gatewayServer.Close()
 
@@ -345,47 +350,21 @@ func Test_reconnectToGateway(t *testing.T) {
 
 			gatewayConn, err := connectGateway(gatewayURL, http.Header{})
 			c.NoError(err)
-			bridge := newTestBridge(clientConn, gatewayConn, gatewayURL, test.maxReconnectionAttempts)
+			bridge := newTestBridge(clientConn, gatewayConn, gatewayURL, 3)
 
 			bridge.mu.Lock()
 			bridge.subscriptions = test.existingSubscriptions
 			bridge.mu.Unlock()
 
-			// Shut down the gateway server to simulate connection failure
-			if test.expectedError != nil {
-				gatewayServer.Close()
-			}
-
-			newGatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer newGatewayServer.Close()
-			newGatewayServer.URL = gatewayURL
-
-			if test.expectedError != nil {
-				newGatewayServer.Close()
-			}
-
-			err = bridge.reconnectToGateway()
-			if test.expectedError != nil {
-				c.Error(err)
-			} else {
-				c.NoError(err)
-			}
+			// Simulate resuming subscriptions
+			bridge.resumeSubscriptions()
 
 			<-time.After(100 * time.Millisecond)
 
-			if test.existingSubscriptions != nil {
-				bridge.mu.Lock()
-				c.Equal(test.existingSubscriptions, bridge.subscriptions)
-				bridge.mu.Unlock()
-			}
+			bridge.mu.Lock()
+			c.Equal(test.expectedSubscriptions, bridge.subscriptions)
+			c.Equal(<-receivedMsgs, test.expectedResubMsg)
+			bridge.mu.Unlock()
 		})
 	}
 }
