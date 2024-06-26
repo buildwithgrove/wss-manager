@@ -55,7 +55,7 @@ func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, m
 	reconnectConfig := &websockets.ReconnectConfig{
 		GatewayURL:              gatewayURL,
 		Headers:                 http.Header{},
-		MaxReconnectionAttempts: 10,
+		MaxReconnectionAttempts: maxReconnectionAttempts,
 		SubsFunc:                b.resumeSubscriptions,
 	}
 

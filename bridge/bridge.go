@@ -147,15 +147,23 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 	clientMsg := websockets.ClientMessage{Message: msg.Data}
 	clientMsgBytes, err := json.Marshal(clientMsg)
 	if err != nil {
-		b.log.Error("error marshalling client message:", slog.String("error", err.Error()))
+		errMsg := fmt.Sprintf("error marshalling client message: %s", err.Error())
+		b.log.Error(errMsg)
+		if err := b.clientConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
+			b.log.Error("error writing error message to client websocket", slog.String("error", err.Error()))
+		}
 		return
 	}
 
 	err = b.gatewayConn.WriteMessage(msg.MessageType, clientMsgBytes)
 	if err != nil {
 		// An error writing means the connection is broken and the bridge should be stopped
-		b.log.Error("error writing to gateway websocket", slog.String("error", err.Error()))
-		b.stopChan <- fmt.Errorf("error writing to gateway websocket: %w", err)
+		errMsg := fmt.Sprintf("error writing to gateway websocket: %s", err.Error())
+		b.log.Error(errMsg)
+		if err := b.clientConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
+			b.log.Error("error writing error message to client websocket", slog.String("error", err.Error()))
+		}
+		b.stopChan <- fmt.Errorf(errMsg)
 		return
 	}
 }
@@ -165,7 +173,11 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 	// Check if the message is a subscription event or a response to a pending subscribe or unsubscribe request
 	processedMsg, err := b.processGatewayResponse(msg.Data)
 	if err != nil {
-		b.log.Error("error processing gateway response:", slog.String("error", err.Error()))
+		errMsg := fmt.Sprintf("error processing gateway response: %s", err.Error())
+		b.log.Error(errMsg)
+		if err := b.gatewayConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
+			b.log.Error("error writing to error message to gateway websocket", slog.String("error", err.Error()))
+		}
 		return
 	}
 
@@ -177,8 +189,12 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 	err = b.clientConn.WriteMessage(msg.MessageType, processedMsg)
 	if err != nil {
 		// An error writing means the connection is broken and the bridge should be stopped
-		b.log.Error("error writing to client websocket", slog.String("error", err.Error()))
-		b.stopChan <- fmt.Errorf("error writing to client websocket: %w", err)
+		errMsg := fmt.Sprintf("error writing to client websocket: %s", err.Error())
+		b.log.Error(errMsg)
+		if err := b.gatewayConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
+			b.log.Error("error writing error message to gateway websocket", slog.String("error", err.Error()))
+		}
+		b.stopChan <- fmt.Errorf(errMsg)
 		return
 	}
 }
