@@ -127,6 +127,7 @@ func newAPIRouter(config Config) *wsRouter {
 // This client is used to proxy requests to the Gateway
 func newHTTPClient() *client.Client {
 	return client.NewCustomClientWithOptions(client.CustomClientOpts{
+		// TODO - make client config configurable while WSS Manager is running (possibly by endpoint?)
 		Transport: &http.Transport{
 			MaxConnsPerHost:     100,
 			MaxIdleConnsPerHost: 100,

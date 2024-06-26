@@ -7,7 +7,7 @@ replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alp
 require (
 	github.com/gorilla/websocket v1.5.1
 	github.com/pokt-foundation/portal-http-db/v2 v2.16.2
-	github.com/pokt-foundation/portal-middleware v0.0.14-dev // TODO - replace with proper tag
+	github.com/pokt-foundation/portal-middleware v0.0.288
 	github.com/pokt-foundation/utils-go v0.11.1
 	github.com/stretchr/testify v1.9.0
 )
