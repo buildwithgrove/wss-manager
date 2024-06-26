@@ -348,7 +348,7 @@ func Test_resumeSubscriptions(t *testing.T) {
 
 			gatewayURL := "ws" + strings.TrimPrefix(gatewayServer.URL, "http")
 
-			gatewayConn, err := connectGateway(gatewayURL, http.Header{})
+			gatewayConn, _, err := websocket.DefaultDialer.Dial(gatewayURL, http.Header{})
 			c.NoError(err)
 			bridge := newTestBridge(clientConn, gatewayConn, gatewayURL, 3)
 

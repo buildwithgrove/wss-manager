@@ -52,9 +52,9 @@ type (
 
 // NewBridge creates a new Bridge instance and a new connection to the Gateway from the Gateway URL
 func NewBridge(config Config) (*Bridge, error) {
-	gatewayConn, err := connectGateway(config.GatewayURL, config.Headers)
+	gatewayConn, _, err := websocket.DefaultDialer.Dial(config.GatewayURL, config.Headers)
 	if err != nil {
-		return nil, fmt.Errorf("error establishing connection to node: %s", err.Error())
+		return nil, fmt.Errorf("error establishing connection to Gateway: %s", err.Error())
 	}
 
 	msgChan := make(chan websockets.Message)
@@ -71,20 +71,20 @@ func NewBridge(config Config) (*Bridge, error) {
 		log:           log,
 	}
 
-	reconnectConfig := &websockets.ReconnectConfig{
-		GatewayURL:              config.GatewayURL,
-		Headers:                 config.Headers,
-		MaxReconnectionAttempts: config.MaxReconnectionAttempts,
-		SubsFunc:                b.resumeSubscriptions,
-	}
-
+	// Establish both connections and start reading from them
 	b.gatewayConn = websockets.NewConnection(websockets.ConnConfig{
-		Conn:            gatewayConn,
-		Source:          websockets.SourceBackend,
-		ReconnectConfig: reconnectConfig,
-		MsgChan:         msgChan,
-		StopChan:        stopChan,
-		Log:             log.With("conn", "gateway"),
+		Conn:   gatewayConn,
+		Source: websockets.SourceBackend,
+		// Only the gateway conn will attempt to reconnect
+		ReconnectConfig: &websockets.ReconnectConfig{
+			GatewayURL:              config.GatewayURL,
+			Headers:                 config.Headers,
+			MaxReconnectionAttempts: config.MaxReconnectionAttempts,
+			SubsFunc:                b.resumeSubscriptions,
+		},
+		MsgChan:  msgChan,
+		StopChan: stopChan,
+		Log:      log.With("conn", "gateway"),
 	})
 	b.clientConn = websockets.NewConnection(websockets.ConnConfig{
 		Conn:     config.ClientConn,
@@ -95,16 +95,6 @@ func NewBridge(config Config) (*Bridge, error) {
 	})
 
 	return b, nil
-}
-
-// connectGateway connects to the gateway and returns the websocket connection.
-func connectGateway(gatewayURL string, headers http.Header) (*websocket.Conn, error) {
-	conn, _, err := websocket.DefaultDialer.Dial(gatewayURL, headers)
-	if err != nil {
-		return nil, err
-	}
-
-	return conn, nil
 }
 
 /* ---------- Public method - Run Bridge ---------- */
@@ -148,6 +138,8 @@ func (b *Bridge) messageLoop() {
 	}
 }
 
+/* ---------- Private methods - Message handling ---------- */
+
 // handleClientMessage processes a message from the Client and sends it to the Gateway
 func (b *Bridge) handleClientMessage(msg websockets.Message) {
 	b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).Inc(metrics.LabelAttempt)
@@ -169,7 +161,6 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 
 	err = b.gatewayConn.WriteMessage(msg.MessageType, clientMsgBytes)
 	if err != nil {
-		// An error writing means the connection is broken and the bridge should be stopped
 		errMsg := fmt.Sprintf("error writing to gateway websocket: %s", err.Error())
 		b.log.Error(errMsg)
 		b.metrics.Counter(metrics.CategoryBridge, metrics.NameClientRelay).IncWithLabels(prometheus.Labels{
@@ -179,6 +170,8 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 		if err := b.clientConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to client websocket", slog.String("error", err.Error()))
 		}
+
+		// An error writing means the connection is broken and the bridge should be stopped
 		b.stopChan <- fmt.Errorf(errMsg)
 		return
 	}
@@ -212,7 +205,6 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 
 	err = b.clientConn.WriteMessage(msg.MessageType, processedMsg)
 	if err != nil {
-		// An error writing means the connection is broken and the bridge should be stopped
 		errMsg := fmt.Sprintf("error writing to client websocket: %s", err.Error())
 		b.log.Error(errMsg)
 		b.metrics.Counter(metrics.CategoryBridge, metrics.NameGatewayRelay).IncWithLabels(prometheus.Labels{
@@ -222,6 +214,8 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 		if err := b.gatewayConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to gateway websocket", slog.String("error", err.Error()))
 		}
+
+		// An error writing means the connection is broken and the bridge should be stopped
 		b.stopChan <- fmt.Errorf(errMsg)
 		return
 	}
@@ -246,6 +240,8 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 
 	return gatewayMsg.Message, nil
 }
+
+/* ---------- Private methods - Subscription Handling ---------- */
 
 func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) error {
 	subEventType := gatewayMsg.SubscriptionEventType()
@@ -276,8 +272,6 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 
 	return nil
 }
-
-/* ---------- Private methods - Gateway Reconnection Handling ---------- */
 
 func (b *Bridge) resumeSubscriptions() {
 	b.mu.RLock()

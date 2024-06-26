@@ -10,14 +10,14 @@ const (
 	// Router metrics
 	CategoryRelay = "relay"
 
-	NameHTTPRelay = "http-relay"
-	NameWSRelay   = "ws-relay"
+	NameHTTPRelay = "http_relay"
+	NameWSRelay   = "ws_relay"
 
 	// Bridge metrics
 	CategoryBridge = "bridge"
 
-	NameClientRelay  = "client-relay"
-	NameGatewayRelay = "gateway-relay"
+	NameClientRelay  = "client_relay"
+	NameGatewayRelay = "gateway_relay"
 	NameReconnect    = "reconnect"
 	NameSubscribe    = "subscribe"
 	NameResubscribe  = "resubscribe"

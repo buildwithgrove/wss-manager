@@ -26,7 +26,7 @@ const (
 	defaultImageTag                = "development"
 
 	// Metric namespace
-	metricNamespace = "wss-manager"
+	metricNamespace = "wss_manager"
 )
 
 type options struct {
