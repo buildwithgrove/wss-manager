@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,23 +38,44 @@ type (
 	gatewayResp string
 )
 
-func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, log *logger.Logger) *Bridge {
-	return &Bridge{
-		clientConn:              clientConn,
-		gatewayConn:             gatewayConn,
-		gatewayURL:              gatewayURL,
-		maxReconnectionAttempts: 10,
+func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, maxReconnectionAttempts int) *Bridge {
+	msgChan := make(chan websockets.Message)
+	stopChan := make(chan error)
 
-		stopChan:       make(chan error),
-		pausePingLoop:  make(chan struct{}),
-		resumePingLoop: make(chan struct{}),
-		wsLock:         sync.Mutex{},
+	log := logger.New().With("component", "bridge")
 
+	b := &Bridge{
+		msgChan:       msgChan,
+		stopChan:      make(chan error),
 		subscriptions: make(map[websockets.SubscriptionID]*websockets.Subscription),
-		subsLock:      sync.RWMutex{},
-
-		log: log,
+		mu:            sync.RWMutex{},
+		log:           log,
 	}
+
+	reconnectConfig := &websockets.ReconnectConfig{
+		GatewayURL:              gatewayURL,
+		Headers:                 http.Header{},
+		MaxReconnectionAttempts: maxReconnectionAttempts,
+		SubsFunc:                b.resumeSubscriptions,
+	}
+
+	b.gatewayConn = websockets.NewConnection(websockets.ConnConfig{
+		Conn:            gatewayConn,
+		Source:          websockets.SourceBackend,
+		MsgChan:         msgChan,
+		StopChan:        stopChan,
+		ReconnectConfig: reconnectConfig,
+		Log:             log.With("conn", "gateway"),
+	})
+	b.clientConn = websockets.NewConnection(websockets.ConnConfig{
+		Conn:     clientConn,
+		Source:   websockets.SourceClient,
+		MsgChan:  msgChan,
+		StopChan: stopChan,
+		Log:      log.With("conn", "client"),
+	})
+
+	return b
 }
 
 func Test_NewBridge(t *testing.T) {
@@ -111,6 +131,23 @@ func Test_NewBridge(t *testing.T) {
 				test.config.GatewayURL = "ws" + strings.TrimPrefix(server.URL, "http")
 			}
 
+			// Create a mock client connection
+			clientServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upgrader := websocket.Upgrader{}
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Error("Error during connection upgradation:", err)
+					return
+				}
+				conn.Close()
+			}))
+			defer clientServer.Close()
+
+			clientURL := "ws" + strings.TrimPrefix(clientServer.URL, "http")
+			clientConn, _, err := websocket.DefaultDialer.Dial(clientURL, nil)
+			c.NoError(err)
+			test.config.ClientConn = clientConn
+
 			bridge, err := NewBridge(test.config)
 
 			if test.expectedError {
@@ -120,13 +157,7 @@ func Test_NewBridge(t *testing.T) {
 				c.NoError(err)
 				c.NotNil(bridge)
 				c.NotNil(bridge.clientConn)
-				c.Equal(test.config.GatewayURL, bridge.gatewayURL)
-				c.Equal(test.config.Headers, bridge.headers)
-				c.Equal(test.config.MaxReconnectionAttempts, bridge.maxReconnectionAttempts)
-				c.Equal(test.config.Log, bridge.log)
 				c.NotNil(bridge.stopChan)
-				c.NotNil(bridge.pausePingLoop)
-				c.NotNil(bridge.resumePingLoop)
 				c.NotNil(bridge.subscriptions)
 				if test.expectedGatewayConnNil {
 					c.Nil(bridge.gatewayConn)
@@ -145,7 +176,6 @@ func Test_Bridge_Run(t *testing.T) {
 		subscription     map[clientReq]*websockets.Subscription
 		unsubscription   map[clientReq]*websockets.SubscriptionID
 		expectedSubsByID map[websockets.SubscriptionID]*websockets.Subscription
-		closeBridgeTest  bool
 		expectedStopErr  string
 	}{
 		{
@@ -200,11 +230,6 @@ func Test_Bridge_Run(t *testing.T) {
 				},
 			},
 		},
-		{
-			name:            "should call closeBridge and send stop error",
-			closeBridgeTest: true,
-			expectedStopErr: "test error: closeBridge",
-		},
 	}
 
 	for _, test := range tests {
@@ -218,7 +243,7 @@ func Test_Bridge_Run(t *testing.T) {
 			clientConn := testClientWSConn(t, test.wsReqs)
 			gatewayConn, gatewayURL := testGatewayWSConn(t, test.wsReqs, test.subscription, test.unsubscription)
 
-			bridge := newTestBridge(clientConn.Conn, gatewayConn.Conn, gatewayURL, logger.New())
+			bridge := newTestBridge(clientConn.Conn, gatewayConn.Conn, gatewayURL, 10)
 
 			// Start the bridge
 			go bridge.Run()
@@ -227,15 +252,6 @@ func Test_Bridge_Run(t *testing.T) {
 
 			// Wait for a short duration to allow goroutines to run
 			<-time.After(500 * time.Millisecond)
-
-			if test.closeBridgeTest {
-				customStopChan := make(chan error, 1)
-				bridge.stopChan = customStopChan
-				go bridge.closeBridge("test error", fmt.Errorf("closeBridge"))
-				stopErr := <-customStopChan
-				c.EqualError(stopErr, test.expectedStopErr)
-				return
-			}
 
 			// Assert that the client sent the expected requests and the gateway received the expected responses
 			capturedMessages.Lock()
@@ -258,249 +274,28 @@ func Test_Bridge_Run(t *testing.T) {
 	}
 }
 
-func Test_cleanup(t *testing.T) {
+func Test_resumeSubscriptions(t *testing.T) {
 	tests := []struct {
-		name          string
-		expectedError bool
+		name                  string
+		existingSubscriptions map[websockets.SubscriptionID]*websockets.Subscription
+		expectedSubscriptions map[websockets.SubscriptionID]*websockets.Subscription
+		expectedResubMsg      []byte
 	}{
 		{
-			name:          "should cleanup without errors",
-			expectedError: false,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			// Create a mock server for client connection
-			clientServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer clientServer.Close()
-
-			clientURL := "ws" + strings.TrimPrefix(clientServer.URL, "http")
-			clientConn, _, err := websocket.DefaultDialer.Dial(clientURL, nil)
-			c.NoError(err)
-
-			// Create a mock server for gateway connection
-			gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer gatewayServer.Close()
-
-			gatewayURL := "ws" + strings.TrimPrefix(gatewayServer.URL, "http")
-			gatewayConn, _, err := websocket.DefaultDialer.Dial(gatewayURL, nil)
-			c.NoError(err)
-
-			bridge := &Bridge{
-				clientConn:  clientConn,
-				gatewayConn: gatewayConn,
-				log:         logger.New(),
-				wsLock:      sync.Mutex{},
-			}
-
-			err = bridge.cleanup(fmt.Errorf("test error"))
-
-			if test.expectedError {
-				c.Error(err)
-			} else {
-				c.NoError(err)
-			}
-		})
-	}
-}
-
-func Test_handleClientError(t *testing.T) {
-	tests := []struct {
-		name          string
-		err           error
-		expectedClose bool
-	}{
-		{
-			name:          "should log info when client websocket closes normally",
-			err:           &websocket.CloseError{Code: websocket.CloseGoingAway},
-			expectedClose: false,
-		},
-		{
-			name:          "should log info when client websocket closes abnormally",
-			err:           &websocket.CloseError{Code: websocket.CloseAbnormalClosure},
-			expectedClose: false,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			// Create a mock server for client connection
-			clientServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer clientServer.Close()
-
-			clientURL := "ws" + strings.TrimPrefix(clientServer.URL, "http")
-			clientConn, _, err := websocket.DefaultDialer.Dial(clientURL, nil)
-			c.NoError(err)
-
-			// Create a mock server for gateway connection
-			gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer gatewayServer.Close()
-
-			gatewayURL := "ws" + strings.TrimPrefix(gatewayServer.URL, "http")
-			gatewayConn, _, err := websocket.DefaultDialer.Dial(gatewayURL, nil)
-			c.NoError(err)
-
-			bridge := &Bridge{
-				clientConn:  clientConn,
-				gatewayConn: gatewayConn,
-				log:         logger.New(),
-				wsLock:      sync.Mutex{},
-				stopChan:    make(chan error, 1),
-			}
-
-			customStopChan := make(chan error, 1)
-			bridge.stopChan = customStopChan
-
-			// Call handleClientError
-			bridge.handleClientError(test.err)
-
-			stopErr := <-customStopChan
-			expectedErrStr := fmt.Sprintf("error reading from client websocket: %s", test.err.Error())
-			c.EqualError(stopErr, expectedErrStr)
-		})
-	}
-}
-
-func Test_handleGatewayError(t *testing.T) {
-	tests := []struct {
-		name                string
-		err                 error
-		expectedReconnect   bool
-		expectedCloseBridge bool
-	}{
-		{
-			name:                "should not attempt to reconnect on unexpected close error",
-			err:                 &websocket.CloseError{Code: websocket.CloseGoingAway},
-			expectedReconnect:   false,
-			expectedCloseBridge: true,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			// Create a mock server for client connection
-			clientServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer clientServer.Close()
-
-			clientURL := "ws" + strings.TrimPrefix(clientServer.URL, "http")
-			clientConn, _, err := websocket.DefaultDialer.Dial(clientURL, nil)
-			c.NoError(err)
-
-			// Create a mock server for gateway connection
-			gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
-				if err != nil {
-					t.Error("Error during connection upgradation:", err)
-					return
-				}
-				conn.Close()
-			}))
-			defer gatewayServer.Close()
-
-			gatewayURL := "ws" + strings.TrimPrefix(gatewayServer.URL, "http")
-			gatewayConn, _, err := websocket.DefaultDialer.Dial(gatewayURL, nil)
-			c.NoError(err)
-
-			bridge := &Bridge{
-				clientConn:  clientConn,
-				gatewayConn: gatewayConn,
-				log:         logger.New(),
-				wsLock:      sync.Mutex{},
-				stopChan:    make(chan error, 1),
-			}
-
-			customStopChan := make(chan error, 1)
-			bridge.stopChan = customStopChan
-
-			// Call handleGatewayError
-			reconnectedToGateway := bridge.handleGatewayError(test.err)
-
-			stopErr := <-customStopChan
-			expectedErrStr := fmt.Sprintf("error reading from gateway websocket: %s", test.err.Error())
-			c.EqualError(stopErr, expectedErrStr)
-
-			// Check if reconnect was attempted
-			c.Equal(test.expectedReconnect, reconnectedToGateway)
-
-		})
-	}
-}
-
-func Test_reconnectToGateway(t *testing.T) {
-	tests := []struct {
-		name                    string
-		maxReconnectionAttempts int
-		existingSubscriptions   map[websockets.SubscriptionID]*websockets.Subscription
-		expectedError           error
-	}{
-		{
-			name:                    "should reconnect to gateway successfully",
-			maxReconnectionAttempts: 3,
-			expectedError:           nil,
-		},
-		{
-			name:                    "should reconnect and re-establish subscriptions",
-			maxReconnectionAttempts: 3,
+			name: "should resume subscriptions successfully",
 			existingSubscriptions: map[websockets.SubscriptionID]*websockets.Subscription{
 				"0x1": {
 					ID:          "0x1",
 					RequestBody: []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`),
 				},
 			},
-			expectedError: nil,
-		},
-		{
-			name:                    "should fail to reconnect to gateway after max attempts",
-			maxReconnectionAttempts: 3,
-			expectedError:           fmt.Errorf("failed to reconnect to gateway after 3 attempts"),
+			expectedSubscriptions: map[websockets.SubscriptionID]*websockets.Subscription{
+				"0x1": {
+					ID:          "0x1",
+					RequestBody: []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_subscribe","params":["newHeads"]}`),
+				},
+			},
+			expectedResubMsg: []byte(`{"Message":{"id":1,"jsonrpc":"2.0","method":"eth_subscribe","params":["newHeads"]},"ResubscribeID":"0x1"}`),
 		},
 	}
 
@@ -511,18 +306,19 @@ func Test_reconnectToGateway(t *testing.T) {
 			// Create a mock server for client connection
 			clientServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				upgrader := websocket.Upgrader{}
-				conn, err := upgrader.Upgrade(w, r, nil)
+				_, err := upgrader.Upgrade(w, r, nil)
 				if err != nil {
 					t.Error("Error during connection upgradation:", err)
 					return
 				}
-				conn.Close()
 			}))
 			defer clientServer.Close()
 
 			clientURL := "ws" + strings.TrimPrefix(clientServer.URL, "http")
 			clientConn, _, err := websocket.DefaultDialer.Dial(clientURL, nil)
 			c.NoError(err)
+
+			receivedMsgs := make(chan []byte)
 
 			// Create a mock server for gateway connection
 			gatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -532,49 +328,39 @@ func Test_reconnectToGateway(t *testing.T) {
 					t.Error("Error during connection upgradation:", err)
 					return
 				}
-				conn.Close()
+
+				go func() {
+					for {
+						_, message, err := conn.ReadMessage()
+						if err != nil {
+							t.Error("Error reading message:", err)
+							return
+						}
+						receivedMsgs <- message
+					}
+				}()
 			}))
 			defer gatewayServer.Close()
 
 			gatewayURL := "ws" + strings.TrimPrefix(gatewayServer.URL, "http")
 
-			bridge := &Bridge{
-				clientConn:              clientConn,
-				gatewayURL:              gatewayURL,
-				headers:                 http.Header{},
-				maxReconnectionAttempts: test.maxReconnectionAttempts,
-				stopChan:                make(chan error),
-				pausePingLoop:           make(chan struct{}),
-				resumePingLoop:          make(chan struct{}),
-				wsLock:                  sync.Mutex{},
-				subscriptions:           test.existingSubscriptions,
-				subsLock:                sync.RWMutex{},
-				log:                     logger.New(),
-			}
-
-			// Simulate initial connection
-			gatewayConn, err := bridge.connectGateway()
+			gatewayConn, err := connectGateway(gatewayURL, http.Header{})
 			c.NoError(err)
-			bridge.gatewayConn = gatewayConn
+			bridge := newTestBridge(clientConn, gatewayConn, gatewayURL, 3)
 
-			go bridge.clientPingLoop()
-			go bridge.gatewayPingLoop()
+			bridge.mu.Lock()
+			bridge.subscriptions = test.existingSubscriptions
+			bridge.mu.Unlock()
 
-			// Shut down the gateway server to simulate connection failure
-			if test.expectedError != nil {
-				gatewayServer.Close()
-			}
+			// Simulate resuming subscriptions
+			bridge.resumeSubscriptions()
 
-			err = bridge.reconnectToGateway()
-			if test.expectedError != nil {
-				c.Error(err)
-			} else {
-				c.NoError(err)
-			}
+			<-time.After(100 * time.Millisecond)
 
-			if test.existingSubscriptions != nil {
-				c.Equal(test.existingSubscriptions, bridge.subscriptions)
-			}
+			bridge.mu.Lock()
+			c.Equal(test.expectedSubscriptions, bridge.subscriptions)
+			c.Equal(<-receivedMsgs, test.expectedResubMsg)
+			bridge.mu.Unlock()
 		})
 	}
 }
