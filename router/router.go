@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,7 +14,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
-	"github.com/pokt-foundation/utils-go/client"
+	"github.com/pokt-foundation/portal-middleware/health"
 	"github.com/pokt-foundation/utils-go/logger"
 	"github.com/pokt-foundation/wss-manager/bridge"
 )
@@ -23,7 +22,6 @@ import (
 type (
 	wsRouter struct {
 		mux                     *http.ServeMux
-		http                    *client.Client
 		logger                  *logger.Logger
 		gatewayURLFunc          GatewayURLFunc
 		maxReconnectionAttempts int
@@ -70,17 +68,6 @@ func Start(ctx context.Context, config Config) error {
 	return nil
 }
 
-// methodCheckMiddleware ensures that only GET requests are allowed for the wrapped handler
-func methodCheckMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed: only GET requests are allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		next(w, r)
-	}
-}
-
 // corsMiddleware handles CORS for the wrapped handler
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -104,7 +91,6 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 func newAPIRouter(config Config) *wsRouter {
 	wr := &wsRouter{
 		mux:                     http.NewServeMux(),
-		http:                    newHTTPClient(),
 		gatewayURLFunc:          config.GatewayURLFunc,
 		maxReconnectionAttempts: config.MaxReconnectionAttempts,
 		tls:                     config.TLS,
@@ -113,7 +99,7 @@ func newAPIRouter(config Config) *wsRouter {
 	}
 
 	// GET /healthz - handleHealthz returns a simple health check response
-	wr.mux.HandleFunc("GET /healthz", methodCheckMiddleware(wr.handleHealthz))
+	wr.mux.HandleFunc("GET /healthz", wr.handleHealthz)
 
 	// GET /v1/{app} - handles requests sent to the WSS Manager
 	// `wss` requests are upgraded to a WebSocket connection
@@ -123,35 +109,32 @@ func newAPIRouter(config Config) *wsRouter {
 	return wr
 }
 
-// newHTTPClient creates a new HTTP client with the same transport config as Gateway
-// This client is used to proxy requests to the Gateway
-func newHTTPClient() *client.Client {
-	return client.NewCustomClientWithOptions(client.CustomClientOpts{
-		// TODO - make client config configurable while WSS Manager is running (possibly by endpoint?)
-		Transport: &http.Transport{
-			MaxConnsPerHost:     100,
-			MaxIdleConnsPerHost: 100,
-			MaxIdleConns:        10_000,
-			IdleConnTimeout:     90 * time.Second,
-			DialContext: (&net.Dialer{
-				Timeout:   3 * time.Second,
-				KeepAlive: 30 * time.Second,
-				DualStack: true,
-			}).DialContext,
-		},
-		Timeout: 10 * time.Second,
-		Retries: 3,
-	})
-}
-
-// * /healthz - handleHealthz returns a simple health check response
+// * /healthz - handleHealthz returns a simple health check response, as well as the health check response from the Gateway.
+// The Gateway does not have a public IP so querying the /healthz endpoint from outside must go through WSS Manager.
 func (wr *wsRouter) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	var gatewayHealthCheckJSON health.HealthCheckJSON
+
+	resp, err := http.Get(wr.gatewayURLFunc("https", "mainnet", "/healthz"))
+	if err != nil {
+		gatewayHealthCheckJSON = health.HealthCheckJSON{Status: "request error"}
+	} else {
+		err := json.NewDecoder(resp.Body).Decode(&gatewayHealthCheckJSON)
+		if err != nil {
+			wr.logger.Error("error unmarshalling gateway health check", slog.String("error", err.Error()))
+			gatewayHealthCheckJSON = health.HealthCheckJSON{Status: "unmarshal error"}
+		}
+		defer resp.Body.Close()
+	}
+
 	responseBytes, err := json.Marshal(struct {
-		Status   string `json:"status"`
-		ImageTag string `json:"imageTag"`
+		WSSManagerHealth health.HealthCheckJSON `json:"wssManagerHealth"`
+		GatewayHealth    health.HealthCheckJSON `json:"gatewayHealth"`
 	}{
-		Status:   "ok",
-		ImageTag: wr.imageTag,
+		WSSManagerHealth: health.HealthCheckJSON{
+			Status:   "ok",
+			ImageTag: wr.imageTag,
+		},
+		GatewayHealth: gatewayHealthCheckJSON,
 	})
 	if err != nil {
 		wr.logger.Error("error marshalling health check response", slog.String("error", err.Error()))
