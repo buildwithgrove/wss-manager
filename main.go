@@ -58,7 +58,7 @@ func main() {
 		}
 	}()
 
-	// eg. [https/ws]://eth-mainnet.rpc.grove.city/v1/1a2b3c4d
+	// eg. [https/ws]://mainnet.rpc.grove.city/v1/1a2b3c4d
 	gatewayURLFunc := func(scheme string, chain types.ChainAlias, path string) string {
 		const gatewayURLTemplate = "%s://%s.%s%s"
 		return fmt.Sprintf(gatewayURLTemplate, scheme, chain, options.gatewayDomain, path)
