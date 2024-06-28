@@ -103,6 +103,10 @@ func NewBridge(config Config) (*Bridge, error) {
 func (b *Bridge) Run() {
 	defer func() {
 		if r := recover(); r != nil {
+			b.metrics.Counter(metrics.CategoryBridge, metrics.NamePanic).IncWithLabels(prometheus.Labels{
+				"outcome": metrics.LabelSuccess,
+				"error":   fmt.Sprintf("%v", r),
+			})
 			b.log.Error(fmt.Sprintf("bridge panicked: %v", r))
 		}
 	}()

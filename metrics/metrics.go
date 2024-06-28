@@ -3,12 +3,14 @@ package metrics
 import "github.com/pokt-foundation/portal-middleware/metrics/exporter"
 
 const (
+	NamePanic = "panic_recovered"
+
 	LabelAttempt = "attempt"
 	LabelSuccess = "success"
 	LabelError   = "error"
 
 	// Router metrics
-	CategoryRelay = "relay"
+	CategoryRouter = "router"
 
 	NameHTTPRelay = "http_relay"
 	NameWSRelay   = "ws_relay"
@@ -31,6 +33,8 @@ const (
 )
 
 var (
+	LabelsRecovered = []string{"outcome", "error"}
+
 	// Router Labels
 	LabelsRelay = []string{"outcome", "chain_alias", "error"}
 
@@ -45,10 +49,12 @@ func NewMetricExporter(namespace string) exporter.MetricExporter {
 	metricsExporter := exporter.NewMetricExporter(namespace)
 
 	// Router metrics
-	_ = metricsExporter.NewCounter(CategoryRelay, NameHTTPRelay, LabelsRelay, "HTTP Relays")
-	_ = metricsExporter.NewCounter(CategoryRelay, NameWSRelay, LabelsRelay, "WebSocket Relays")
+	_ = metricsExporter.NewCounter(CategoryRouter, NamePanic, LabelsRecovered, "Panic Recovered")
+	_ = metricsExporter.NewCounter(CategoryRouter, NameHTTPRelay, LabelsRelay, "HTTP Relays")
+	_ = metricsExporter.NewCounter(CategoryRouter, NameWSRelay, LabelsRelay, "WebSocket Relays")
 
 	// Bridge metrics
+	_ = metricsExporter.NewCounter(CategoryBridge, NamePanic, LabelsRecovered, "Panic Recovered")
 	_ = metricsExporter.NewCounter(CategoryBridge, NameClientRelay, LabelsWSRelay, "WebSocket Client Relays")
 	_ = metricsExporter.NewCounter(CategoryBridge, NameGatewayRelay, LabelsWSRelay, "WebSocket Gateway Relays")
 	_ = metricsExporter.NewCounter(CategoryBridge, NameReconnect, LabelsReconnection, "WebSocket Gateway Reconnects")
