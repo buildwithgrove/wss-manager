@@ -95,53 +95,6 @@ func Test_Start(t *testing.T) {
 	}
 }
 
-func Test_methodCheckMiddleware(t *testing.T) {
-	tests := []struct {
-		name       string
-		method     string
-		wantStatus int
-		wantBody   string
-	}{
-		{
-			name:       "should allow GET requests",
-			method:     http.MethodGet,
-			wantStatus: http.StatusOK,
-			wantBody:   "ok",
-		},
-		{
-			name:       "should reject non-GET requests",
-			method:     http.MethodPost,
-			wantStatus: http.StatusMethodNotAllowed,
-			wantBody:   "method not allowed: only GET requests are allowed\n",
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			c := require.New(t)
-
-			handler := methodCheckMiddleware(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-				_, err := w.Write([]byte("ok"))
-				c.NoError(err)
-			})
-
-			req := httptest.NewRequest(test.method, "/healthz", nil)
-			w := httptest.NewRecorder()
-
-			handler(w, req)
-
-			resp := w.Result()
-			body, err := io.ReadAll(resp.Body)
-			c.NoError(err)
-			resp.Body.Close()
-
-			c.Equal(test.wantStatus, resp.StatusCode)
-			c.Equal(test.wantBody, string(body))
-		})
-	}
-}
-
 func Test_corsMiddleware(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -220,7 +173,7 @@ func Test_handleHealthz(t *testing.T) {
 			name:       "should return health check response",
 			imageTag:   "v1.0.0",
 			wantStatus: http.StatusOK,
-			wantBody:   `{"status":"ok","imageTag":"v1.0.0"}`,
+			wantBody:   `{"wssManagerHealth":{"status":"ok","imageTag":"v1.0.0"},"gatewayHealth":{"status":"ok","imageTag":"v0.0.289","configEnv":"staging","configVersion":6,"readyStates":{"app-informer":true,"qos-client":true}}}`,
 		},
 	}
 
@@ -228,9 +181,20 @@ func Test_handleHealthz(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			c := require.New(t)
 
+			mockGatewayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				response := `{"status":"ok","imageTag":"v0.0.289","configEnv":"staging","configVersion":6,"readyStates":{"app-informer":true,"qos-client":true}}`
+				w.WriteHeader(http.StatusOK)
+				_, err := w.Write([]byte(response))
+				c.NoError(err)
+			}))
+			defer mockGatewayServer.Close()
+
 			config := Config{
 				Logger:         logger.New(),
 				MetricExporter: exporterMocks.Exporter{},
+				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
+					return mockGatewayServer.URL
+				},
 			}
 			router := newAPIRouter(config)
 			router.imageTag = test.imageTag
