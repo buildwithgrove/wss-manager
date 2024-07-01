@@ -49,7 +49,7 @@ type (
 func NewBridge(config Config) (*Bridge, error) {
 	gatewayConn, err := connectGateway(config.GatewayURL, config.Headers)
 	if err != nil {
-		return nil, fmt.Errorf("error establishing connection to node: %s", err.Error())
+		return nil, fmt.Errorf("error establishing connection to gateway: %s", err.Error())
 	}
 
 	msgChan := make(chan websockets.Message)
