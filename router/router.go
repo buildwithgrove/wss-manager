@@ -175,14 +175,9 @@ func (wr *wsRouter) requestHandler(w http.ResponseWriter, req *http.Request) {
 
 // httpHandler handles HTTP requests by proxying them to the Gateway and returning the response to the user
 func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
-	scheme := "http"
-	if wr.tls {
-		scheme += "s"
-	}
-
 	wr.metrics.IncHTTPRelayAttempt(string(chain))
 
-	gatewayURL, err := url.Parse(wr.gatewayURLFunc(scheme, chain, req.URL.Path))
+	gatewayURL, err := url.Parse(wr.gatewayURLFunc("http", chain, req.URL.Path))
 	if err != nil {
 		wr.logger.Error("error parsing gateway URL", slog.String("error", err.Error()))
 		wr.metrics.IncHTTPRelayError(string(chain), err.Error())
@@ -197,11 +192,6 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 
 // websocketHandler handles WebSocket connections by upgrading the connection to a WebSocket connection and creating a bridge
 func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, chain types.ChainAlias) {
-	scheme := "ws"
-	if wr.tls {
-		scheme += "s"
-	}
-
 	// add the `-ws` suffix to the chain to get the WebSocket chain alias
 	chain += "-ws"
 
@@ -229,7 +219,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	// create a new bridge, which includes creating a new gateway connection
 	bridge, err := bridge.NewBridge(bridge.Config{
 		ClientConn:              clientConn,
-		GatewayURL:              wr.gatewayURLFunc(scheme, chain, req.URL.Path),
+		GatewayURL:              wr.gatewayURLFunc("ws", chain, req.URL.Path),
 		MetricExporter:          wr.metrics,
 		Headers:                 headers,
 		MaxReconnectionAttempts: wr.maxReconnectionAttempts,
