@@ -21,6 +21,7 @@ import (
 	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
 	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-manager/metrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,7 +49,7 @@ func Test_Start(t *testing.T) {
 				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
 					return "http://localhost:8080"
 				},
-				MetricExporter: exporterMocks.Exporter{},
+				MetricExporter: &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 			},
 			wantErr: false,
 		},
@@ -60,7 +61,7 @@ func Test_Start(t *testing.T) {
 				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
 					return "http://localhost:8080"
 				},
-				MetricExporter: exporterMocks.Exporter{},
+				MetricExporter: &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 			},
 			wantErr: true,
 		},
@@ -191,7 +192,7 @@ func Test_handleHealthz(t *testing.T) {
 
 			config := Config{
 				Logger:         logger.New(),
-				MetricExporter: exporterMocks.Exporter{},
+				MetricExporter: &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 				GatewayURLFunc: func(scheme string, chain types.ChainAlias, path string) string {
 					return mockGatewayServer.URL
 				},
@@ -319,7 +320,7 @@ func Test_requestHandler(t *testing.T) {
 					}
 					return testWSSGatewayURL
 				},
-				MetricExporter: exporterMocks.Exporter{},
+				MetricExporter: &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 			}
 			router := newAPIRouter(config)
 
@@ -442,7 +443,7 @@ func Test_websocketHandler_Errors(t *testing.T) {
 
 			config := Config{
 				Logger:         logger.New(),
-				MetricExporter: exporterMocks.Exporter{},
+				MetricExporter: &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 			}
 			router := newAPIRouter(config)
 			test.setupMocks(router)

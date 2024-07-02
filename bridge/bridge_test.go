@@ -13,6 +13,7 @@ import (
 	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
 	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-manager/metrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,7 +51,7 @@ func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, m
 		stopChan:      make(chan error),
 		subscriptions: make(map[websockets.SubscriptionID]*websockets.Subscription),
 		mu:            sync.RWMutex{},
-		metrics:       exporterMocks.Exporter{},
+		metrics:       &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 		log:           log,
 	}
 
@@ -94,7 +95,7 @@ func Test_NewBridge(t *testing.T) {
 				GatewayURL:              "ws://localhost:8080",
 				Headers:                 http.Header{},
 				MaxReconnectionAttempts: 5,
-				MetricExporter:          exporterMocks.Exporter{},
+				MetricExporter:          &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 				Log:                     logger.New(),
 			},
 			expectedError:          false,
@@ -107,7 +108,7 @@ func Test_NewBridge(t *testing.T) {
 				GatewayURL:              "ws://invalid-url",
 				Headers:                 http.Header{},
 				MaxReconnectionAttempts: 5,
-				MetricExporter:          exporterMocks.Exporter{},
+				MetricExporter:          &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 				Log:                     logger.New(),
 			},
 			expectedError:          true,
