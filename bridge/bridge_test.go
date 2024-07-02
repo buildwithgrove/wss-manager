@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	exporterMocks "github.com/pokt-foundation/portal-middleware/metrics/exporter/mocks"
 	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-manager/metrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -49,6 +51,7 @@ func newTestBridge(clientConn, gatewayConn *websocket.Conn, gatewayURL string, m
 		stopChan:      make(chan error),
 		subscriptions: make(map[websockets.SubscriptionID]*websockets.Subscription),
 		mu:            sync.RWMutex{},
+		metrics:       &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 		log:           log,
 	}
 
@@ -92,6 +95,7 @@ func Test_NewBridge(t *testing.T) {
 				GatewayURL:              "ws://localhost:8080",
 				Headers:                 http.Header{},
 				MaxReconnectionAttempts: 5,
+				MetricExporter:          &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 				Log:                     logger.New(),
 			},
 			expectedError:          false,
@@ -104,6 +108,7 @@ func Test_NewBridge(t *testing.T) {
 				GatewayURL:              "ws://invalid-url",
 				Headers:                 http.Header{},
 				MaxReconnectionAttempts: 5,
+				MetricExporter:          &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
 				Log:                     logger.New(),
 			},
 			expectedError:          true,
@@ -251,7 +256,7 @@ func Test_Bridge_Run(t *testing.T) {
 			clientConn.sendWSRequests(t, test.wsReqs)
 
 			// Wait for a short duration to allow goroutines to run
-			<-time.After(500 * time.Millisecond)
+			<-time.After(1000 * time.Millisecond)
 
 			// Assert that the client sent the expected requests and the gateway received the expected responses
 			capturedMessages.Lock()
@@ -344,7 +349,7 @@ func Test_resumeSubscriptions(t *testing.T) {
 
 			gatewayURL := "ws" + strings.TrimPrefix(gatewayServer.URL, "http")
 
-			gatewayConn, err := connectGateway(gatewayURL, http.Header{})
+			gatewayConn, _, err := websocket.DefaultDialer.Dial(gatewayURL, http.Header{})
 			c.NoError(err)
 			bridge := newTestBridge(clientConn, gatewayConn, gatewayURL, 3)
 

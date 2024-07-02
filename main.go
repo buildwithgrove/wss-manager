@@ -7,6 +7,7 @@ import (
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/utils-go/environment"
 	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-manager/metrics"
 	"github.com/pokt-foundation/wss-manager/router"
 )
 
@@ -23,6 +24,9 @@ const (
 	defaultTLS                     = true
 	imageTag                       = "IMAGE_TAG"
 	defaultImageTag                = "development"
+
+	// Metric namespace
+	metricNamespace = "wss_manager"
 )
 
 type options struct {
@@ -58,7 +62,10 @@ func main() {
 		}
 	}()
 
-	// eg. [https/ws]://mainnet.rpc.grove.city/v1/1a2b3c4d
+	// Init metric exporter and register all metrics
+	metricExporter := metrics.NewMetricExporter(metricNamespace)
+
+	// eg. [https/ws]://eth-mainnet.rpc.grove.city/v1/1a2b3c4d
 	gatewayURLFunc := func(scheme string, chain types.ChainAlias, path string) string {
 		const gatewayURLTemplate = "%s://%s.%s%s"
 		return fmt.Sprintf(gatewayURLTemplate, scheme, chain, options.gatewayDomain, path)
@@ -66,6 +73,7 @@ func main() {
 
 	err := router.Start(context.Background(), router.Config{
 		GatewayURLFunc:          gatewayURLFunc,
+		MetricExporter:          metricExporter,
 		MaxReconnectionAttempts: options.maxReconnectionAttempts,
 		Port:                    options.port,
 		TLS:                     options.tls,

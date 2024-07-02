@@ -12,6 +12,7 @@ import (
 	"github.com/pokt-foundation/portal-middleware/relay"
 	"github.com/pokt-foundation/portal-middleware/websockets"
 	"github.com/pokt-foundation/utils-go/logger"
+	"github.com/pokt-foundation/wss-manager/metrics"
 )
 
 type (
@@ -34,11 +35,13 @@ type (
 
 		mu sync.RWMutex
 
-		log *slog.Logger
+		metrics *metrics.MetricExporter
+		log     *slog.Logger
 	}
 	Config struct {
 		ClientConn              *websocket.Conn
 		GatewayURL              string
+		MetricExporter          *metrics.MetricExporter
 		Headers                 http.Header
 		MaxReconnectionAttempts int
 		Log                     *logger.Logger
@@ -47,7 +50,7 @@ type (
 
 // NewBridge creates a new Bridge instance and a new connection to the Gateway from the Gateway URL
 func NewBridge(config Config) (*Bridge, error) {
-	gatewayConn, err := connectGateway(config.GatewayURL, config.Headers)
+	gatewayConn, _, err := websocket.DefaultDialer.Dial(config.GatewayURL, config.Headers)
 	if err != nil {
 		return nil, fmt.Errorf("error establishing connection to gateway: %s", err.Error())
 	}
@@ -60,25 +63,26 @@ func NewBridge(config Config) (*Bridge, error) {
 	b := &Bridge{
 		msgChan:       msgChan,
 		stopChan:      stopChan,
+		metrics:       config.MetricExporter,
 		subscriptions: make(map[websockets.SubscriptionID]*websockets.Subscription),
 		mu:            sync.RWMutex{},
 		log:           log,
 	}
 
-	reconnectConfig := &websockets.ReconnectConfig{
-		GatewayURL:              config.GatewayURL,
-		Headers:                 config.Headers,
-		MaxReconnectionAttempts: config.MaxReconnectionAttempts,
-		SubsFunc:                b.resumeSubscriptions,
-	}
-
+	// Establish both connections and start reading from them
 	b.gatewayConn = websockets.NewConnection(websockets.ConnConfig{
-		Conn:            gatewayConn,
-		Source:          websockets.SourceBackend,
-		ReconnectConfig: reconnectConfig,
-		MsgChan:         msgChan,
-		StopChan:        stopChan,
-		Log:             log.With("conn", "gateway"),
+		Conn:   gatewayConn,
+		Source: websockets.SourceBackend,
+		// Only the gateway conn will attempt to reconnect
+		ReconnectConfig: &websockets.ReconnectConfig{
+			GatewayURL:              config.GatewayURL,
+			Headers:                 config.Headers,
+			MaxReconnectionAttempts: config.MaxReconnectionAttempts,
+			SubsFunc:                b.resumeSubscriptions,
+		},
+		MsgChan:  msgChan,
+		StopChan: stopChan,
+		Log:      log.With("conn", "gateway"),
 	})
 	b.clientConn = websockets.NewConnection(websockets.ConnConfig{
 		Conn:     config.ClientConn,
@@ -91,22 +95,13 @@ func NewBridge(config Config) (*Bridge, error) {
 	return b, nil
 }
 
-// connectGateway connects to the gateway and returns the websocket connection.
-func connectGateway(gatewayURL string, headers http.Header) (*websocket.Conn, error) {
-	conn, _, err := websocket.DefaultDialer.Dial(gatewayURL, headers)
-	if err != nil {
-		return nil, err
-	}
-
-	return conn, nil
-}
-
 /* ---------- Public method - Run Bridge ---------- */
 
 // Run starts the bridge and establishes a bidirectional communication between the client and server
 func (b *Bridge) Run() {
 	defer func() {
 		if r := recover(); r != nil {
+			b.metrics.IncPanicRecovered("bridge", fmt.Sprintf("%v", r))
 			b.log.Error(fmt.Sprintf("bridge panicked: %v", r))
 		}
 	}()
@@ -142,13 +137,18 @@ func (b *Bridge) messageLoop() {
 	}
 }
 
+/* ---------- Private methods - Message handling ---------- */
+
 // handleClientMessage processes a message from the Client and sends it to the Gateway
 func (b *Bridge) handleClientMessage(msg websockets.Message) {
+	b.metrics.IncClientRelayAttempt()
+
 	clientMsg := websockets.ClientMessage{Message: msg.Data}
 	clientMsgBytes, err := json.Marshal(clientMsg)
 	if err != nil {
 		errMsg := fmt.Sprintf("error marshalling client message: %s", err.Error())
 		b.log.Error(errMsg)
+		b.metrics.IncClientRelayError(errMsg, metrics.LabelErrorMarshal)
 		if err := b.clientConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to client websocket", slog.String("error", err.Error()))
 		}
@@ -157,24 +157,31 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 
 	err = b.gatewayConn.WriteMessage(msg.MessageType, clientMsgBytes)
 	if err != nil {
-		// An error writing means the connection is broken and the bridge should be stopped
 		errMsg := fmt.Sprintf("error writing to gateway websocket: %s", err.Error())
 		b.log.Error(errMsg)
+		b.metrics.IncClientRelayError(errMsg, metrics.LabelErrorWrite)
 		if err := b.clientConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to client websocket", slog.String("error", err.Error()))
 		}
+
+		// An error writing means the connection is broken and the bridge should be stopped
 		b.stopChan <- fmt.Errorf(errMsg)
 		return
 	}
+
+	b.metrics.IncClientRelaySuccess()
 }
 
 // handleGatewayMessage processes a message from the Gateway and sends it to the Client
 func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
+	b.metrics.IncGatewayRelayAttempt()
+
 	// Check if the message is a subscription event or a response to a pending subscribe or unsubscribe request
 	processedMsg, err := b.processGatewayResponse(msg.Data)
 	if err != nil {
 		errMsg := fmt.Sprintf("error processing gateway response: %s", err.Error())
 		b.log.Error(errMsg)
+		b.metrics.IncGatewayRelayError(errMsg, metrics.LabelErrorProcess)
 		if err := b.gatewayConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing to error message to gateway websocket", slog.String("error", err.Error()))
 		}
@@ -188,15 +195,19 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 
 	err = b.clientConn.WriteMessage(msg.MessageType, processedMsg)
 	if err != nil {
-		// An error writing means the connection is broken and the bridge should be stopped
 		errMsg := fmt.Sprintf("error writing to client websocket: %s", err.Error())
 		b.log.Error(errMsg)
+		b.metrics.IncGatewayRelayError(errMsg, metrics.LabelErrorWrite)
 		if err := b.gatewayConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to gateway websocket", slog.String("error", err.Error()))
 		}
+
+		// An error writing means the connection is broken and the bridge should be stopped
 		b.stopChan <- fmt.Errorf(errMsg)
 		return
 	}
+
+	b.metrics.IncGatewayRelaySuccess()
 }
 
 // processGatewayResponse checks if a gateway response is an active subscription event,
@@ -217,11 +228,15 @@ func (b *Bridge) processGatewayResponse(message []byte) ([]byte, error) {
 	return gatewayMsg.Message, nil
 }
 
+/* ---------- Private methods - Subscription Handling ---------- */
+
 func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) error {
 	subEventType := gatewayMsg.SubscriptionEventType()
 
 	if !subEventType.IsValid() {
-		return fmt.Errorf("invalid subscription event type: %s", subEventType)
+		errMsg := fmt.Sprintf("invalid subscription event type: %s", subEventType)
+		b.metrics.IncSubscribeError(errMsg)
+		return fmt.Errorf(errMsg)
 	}
 
 	switch subEventType {
@@ -233,6 +248,8 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		b.subscriptions[subscription.ID] = subscription
 		b.mu.Unlock()
 
+		b.metrics.IncSubscribe(string(subscription.ID))
+
 	// If response is a unsubscription confirmation remove the subscription from the subscriptions map
 	case websockets.SubTypeUnsubscribe:
 		unsubID := gatewayMsg.Unsubscription
@@ -240,27 +257,32 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		b.mu.Lock()
 		delete(b.subscriptions, *unsubID)
 		b.mu.Unlock()
+
+		b.metrics.IncUnsubscribe(string(*unsubID))
 	}
 
 	return nil
 }
 
-/* ---------- Private methods - Gateway Reconnection Handling ---------- */
-
 func (b *Bridge) resumeSubscriptions() {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+
+	b.log.Info("resuming subscriptions")
+	b.metrics.IncReconnect()
 
 	for _, sub := range b.subscriptions {
 		var relay relay.JsonRpcRelay
 		if err := json.Unmarshal(sub.RequestBody, &relay); err != nil {
 			b.log.Error("error unmarshalling original subscription request body:", slog.String("error", err.Error()))
+			b.metrics.IncResubscribeError(err.Error(), metrics.LabelErrorMarshal)
 			continue
 		}
 
 		subReqBody, err := json.Marshal(relay)
 		if err != nil {
 			b.log.Error("error marshalling original subscription request body:", slog.String("error", err.Error()))
+			b.metrics.IncResubscribeError(err.Error(), metrics.LabelErrorMarshal)
 			continue
 		}
 
@@ -269,15 +291,19 @@ func (b *Bridge) resumeSubscriptions() {
 		clientMsgBytes, err := json.Marshal(clientMsg)
 		if err != nil {
 			b.log.Error("error marshalling original subscription request body:", slog.String("error", err.Error()))
+			b.metrics.IncResubscribeError(err.Error(), metrics.LabelErrorMarshal)
 			continue
 		}
 
 		err = b.gatewayConn.WriteMessage(websocket.TextMessage, clientMsgBytes)
 		if err != nil {
 			b.log.Error("failed to resume subscription", slog.String("error", err.Error()))
+			b.metrics.IncResubscribeError(err.Error(), metrics.LabelErrorWrite)
 			continue
 		}
 
 		b.log.Info("resumed subscription", slog.String("subscription", string(sub.ID)))
+		b.metrics.IncResubscribeSuccess(string(sub.ID))
 	}
+
 }
