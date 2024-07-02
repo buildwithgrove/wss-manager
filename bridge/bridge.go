@@ -52,7 +52,7 @@ type (
 func NewBridge(config Config) (*Bridge, error) {
 	gatewayConn, _, err := websocket.DefaultDialer.Dial(config.GatewayURL, config.Headers)
 	if err != nil {
-		return nil, fmt.Errorf("error establishing connection to gateway: %s", err.Error())
+		return nil, fmt.Errorf("error establishing connection to gateway URL %s Error: %s", config.GatewayURL, err.Error())
 	}
 
 	msgChan := make(chan websockets.Message)

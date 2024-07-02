@@ -56,14 +56,15 @@ func main() {
 
 	logger := logger.New()
 
+	// Init metric exporter and register all metrics
+	metricExporter := metrics.NewMetricExporter(metricNamespace)
+
 	defer func() {
 		if r := recover(); r != nil {
+			metricExporter.IncPanicRecovered("main", fmt.Sprintf("%v", r))
 			logger.Error(fmt.Sprintf("application panicked: %v", r))
 		}
 	}()
-
-	// Init metric exporter and register all metrics
-	metricExporter := metrics.NewMetricExporter(metricNamespace)
 
 	// eg. [https/ws]://eth-mainnet.rpc.grove.city/v1/1a2b3c4d
 	gatewayURLFunc := func(scheme string, chain types.ChainAlias, path string) string {
