@@ -148,7 +148,7 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 	if err != nil {
 		errMsg := fmt.Sprintf("error marshalling client message: %s", err.Error())
 		b.log.Error(errMsg)
-		b.metrics.IncClientRelayError(errMsg)
+		b.metrics.IncClientRelayError(errMsg, metrics.LabelErrorMarshal)
 		if err := b.clientConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to client websocket", slog.String("error", err.Error()))
 		}
@@ -159,7 +159,7 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 	if err != nil {
 		errMsg := fmt.Sprintf("error writing to gateway websocket: %s", err.Error())
 		b.log.Error(errMsg)
-		b.metrics.IncClientRelayError(errMsg)
+		b.metrics.IncClientRelayError(errMsg, metrics.LabelErrorWrite)
 		if err := b.clientConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to client websocket", slog.String("error", err.Error()))
 		}
@@ -181,7 +181,7 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 	if err != nil {
 		errMsg := fmt.Sprintf("error processing gateway response: %s", err.Error())
 		b.log.Error(errMsg)
-		b.metrics.IncGatewayRelayError(errMsg)
+		b.metrics.IncGatewayRelayError(errMsg, metrics.LabelErrorProcess)
 		if err := b.gatewayConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing to error message to gateway websocket", slog.String("error", err.Error()))
 		}
@@ -197,7 +197,7 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 	if err != nil {
 		errMsg := fmt.Sprintf("error writing to client websocket: %s", err.Error())
 		b.log.Error(errMsg)
-		b.metrics.IncGatewayRelayError(errMsg)
+		b.metrics.IncGatewayRelayError(errMsg, metrics.LabelErrorWrite)
 		if err := b.gatewayConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to gateway websocket", slog.String("error", err.Error()))
 		}
@@ -234,7 +234,9 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 	subEventType := gatewayMsg.SubscriptionEventType()
 
 	if !subEventType.IsValid() {
-		return fmt.Errorf("invalid subscription event type: %s", subEventType)
+		errMsg := fmt.Sprintf("invalid subscription event type: %s", subEventType)
+		b.metrics.IncSubscribeError(errMsg)
+		return fmt.Errorf(errMsg)
 	}
 
 	switch subEventType {
@@ -246,7 +248,7 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		b.subscriptions[subscription.ID] = subscription
 		b.mu.Unlock()
 
-		b.metrics.AddSubscribe(1)
+		b.metrics.IncSubscribe(string(subscription.ID))
 
 	// If response is a unsubscription confirmation remove the subscription from the subscriptions map
 	case websockets.SubTypeUnsubscribe:
@@ -256,7 +258,7 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		delete(b.subscriptions, *unsubID)
 		b.mu.Unlock()
 
-		b.metrics.AddSubscribe(-1)
+		b.metrics.IncUnsubscribe(string(*unsubID))
 	}
 
 	return nil
@@ -266,18 +268,21 @@ func (b *Bridge) resumeSubscriptions() {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
+	b.log.Info("resuming subscriptions")
+	b.metrics.IncReconnect()
+
 	for _, sub := range b.subscriptions {
 		var relay relay.JsonRpcRelay
 		if err := json.Unmarshal(sub.RequestBody, &relay); err != nil {
 			b.log.Error("error unmarshalling original subscription request body:", slog.String("error", err.Error()))
-			b.metrics.IncResubscribeError(err.Error())
+			b.metrics.IncResubscribeError(err.Error(), metrics.LabelErrorMarshal)
 			continue
 		}
 
 		subReqBody, err := json.Marshal(relay)
 		if err != nil {
 			b.log.Error("error marshalling original subscription request body:", slog.String("error", err.Error()))
-			b.metrics.IncResubscribeError(err.Error())
+			b.metrics.IncResubscribeError(err.Error(), metrics.LabelErrorMarshal)
 			continue
 		}
 
@@ -286,18 +291,19 @@ func (b *Bridge) resumeSubscriptions() {
 		clientMsgBytes, err := json.Marshal(clientMsg)
 		if err != nil {
 			b.log.Error("error marshalling original subscription request body:", slog.String("error", err.Error()))
-			b.metrics.IncResubscribeError(err.Error())
+			b.metrics.IncResubscribeError(err.Error(), metrics.LabelErrorMarshal)
 			continue
 		}
 
 		err = b.gatewayConn.WriteMessage(websocket.TextMessage, clientMsgBytes)
 		if err != nil {
 			b.log.Error("failed to resume subscription", slog.String("error", err.Error()))
-			b.metrics.IncResubscribeError(err.Error())
+			b.metrics.IncResubscribeError(err.Error(), metrics.LabelErrorWrite)
 			continue
 		}
 
 		b.log.Info("resumed subscription", slog.String("subscription", string(sub.ID)))
 		b.metrics.IncResubscribeSuccess(string(sub.ID))
 	}
+
 }

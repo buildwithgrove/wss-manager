@@ -6,56 +6,53 @@ import (
 )
 
 const (
-	NamePanic = "panic_recovered"
+	namePanic = "panic_recovered"
 
-	LabelAttempt = "attempt"
-	LabelSuccess = "success"
-	LabelError   = "error"
+	labelAttempt = "attempt"
+	labelSuccess = "success"
+	labelError   = "error"
 
 	// Router metrics
-	CategoryRouter = "router"
+	categoryRouter = "router"
 
-	NameHTTPRelay      = "http_relay"
-	NameHTTPRelayError = "http_relay_error"
-	NameWSRelay        = "ws_relay"
-	NameWSRelayError   = "ws_relay_error"
+	nameHTTPRelay      = "http_relay"
+	nameHTTPRelayError = "http_relay_error"
+	nameWSRelay        = "ws_relay"
+	nameWSRelayError   = "ws_relay_error"
 
 	// Bridge metrics
-	CategoryBridge = "bridge"
+	categoryBridge = "bridge"
 
-	NameClientRelay       = "client_relay"
-	NameClientRelayError  = "client_relay_error"
-	NameGatewayRelay      = "gateway_relay"
-	NameGatewayRelayError = "gateway_relay_error"
-	NameReconnect         = "reconnect"
-	NameReconnectError    = "reconnect_error"
-	NameSubscribe         = "subscribe"
-	NameSubscribeError    = "subscribe_error"
-	NameResubscribe       = "resubscribe"
-	NameResubscribeError  = "resubscribe_error"
+	nameClientRelay       = "client_relay"
+	nameClientRelayError  = "client_relay_error"
+	nameGatewayRelay      = "gateway_relay"
+	nameGatewayRelayError = "gateway_relay_error"
+	nameReconnect         = "reconnect"
+	nameSubscribe         = "subscribe"
+	nameUnsubscribe       = "unsubscribe"
+	nameSubscribeError    = "subscribe_error"
+	nameResubscribe       = "resubscribe"
+	nameResubscribeError  = "resubscribe_error"
 
 	LabelErrorWrite   = "write_error"
 	LabelErrorRead    = "read_error"
 	LabelErrorMarshal = "marshal_error"
 	LabelErrorProcess = "process_error"
-
-	LabelActiveSubscriptions = "active_subscriptions"
 )
 
 var (
-	LabelsRecovered = []string{"package", "error"}
+	labelsRecovered = []string{"package", "error"}
 
-	// Router Labels
-	LabelsRelay      = []string{"outcome", "chain_alias"}
-	LabelsRelayError = []string{"error"}
+	// Router labels
+	labelsRelay      = []string{"status", "chain_alias"}
+	labelsRelayError = []string{"error"}
 
-	// Bridge Labels
-	LabelsWSRelay           = []string{"outcome"}
-	LabelsWSRelayError      = []string{"error"}
-	LabelsReconnection      = []string{"outcome"}
-	LabelsReconnectionError = []string{"error"}
-	LabelsSubscriptions     = []string{"outcome", "sub_id"}
-	LabelsSubscriptionError = []string{"error"}
+	// Bridge labels
+	labelsWSRelay           = []string{"status"}
+	labelsWSRelayError      = []string{"error", "type"}
+	labelsReconnection      = []string{"status"}
+	labelsSubscriptions     = []string{"sub_id"}
+	labelsSubscriptionError = []string{"error"}
 )
 
 type MetricExporter struct {
@@ -67,31 +64,31 @@ func NewMetricExporter(namespace string) *MetricExporter {
 	metricExporter := exporter.NewMetricExporter(namespace)
 
 	// Router metrics
-	_ = metricExporter.NewCounter(CategoryRouter, NamePanic, LabelsRecovered, "Panic Recovered")
-	_ = metricExporter.NewCounter(CategoryRouter, NameHTTPRelay, LabelsRelay, "HTTP Relays")
-	_ = metricExporter.NewCounter(CategoryRouter, NameHTTPRelayError, LabelsRelayError, "HTTP Relay Errors")
-	_ = metricExporter.NewCounter(CategoryRouter, NameWSRelay, LabelsRelay, "WebSocket Relays")
-	_ = metricExporter.NewCounter(CategoryRouter, NameWSRelayError, LabelsRelayError, "WebSocket Relay Errors")
+	_ = metricExporter.NewCounter(categoryRouter, namePanic, labelsRecovered, "Panic Recovered")
+	_ = metricExporter.NewCounter(categoryRouter, nameHTTPRelay, labelsRelay, "HTTP Relays")
+	_ = metricExporter.NewCounter(categoryRouter, nameHTTPRelayError, labelsRelayError, "HTTP Relay Errors")
+	_ = metricExporter.NewCounter(categoryRouter, nameWSRelay, labelsRelay, "WebSocket Relays")
+	_ = metricExporter.NewCounter(categoryRouter, nameWSRelayError, labelsRelayError, "WebSocket Relay Errors")
 
 	// Bridge metrics
-	_ = metricExporter.NewCounter(CategoryBridge, NamePanic, LabelsRecovered, "Panic Recovered")
-	_ = metricExporter.NewCounter(CategoryBridge, NameClientRelay, LabelsWSRelay, "WebSocket Client Relays")
-	_ = metricExporter.NewCounter(CategoryBridge, NameClientRelayError, LabelsWSRelayError, "WebSocket Client Relay Errors")
-	_ = metricExporter.NewCounter(CategoryBridge, NameGatewayRelay, LabelsWSRelay, "WebSocket Gateway Relays")
-	_ = metricExporter.NewCounter(CategoryBridge, NameGatewayRelayError, LabelsWSRelayError, "WebSocket Gateway Relay Errors")
-	_ = metricExporter.NewCounter(CategoryBridge, NameReconnect, LabelsReconnection, "WebSocket Gateway Reconnects")
-	_ = metricExporter.NewCounter(CategoryBridge, NameReconnectError, LabelsReconnectionError, "WebSocket Gateway Reconnect Errors")
-	_ = metricExporter.NewGauge(CategoryBridge, NameSubscribe, LabelsSubscriptions, "WebSocket Subscriptions")
-	_ = metricExporter.NewCounter(CategoryBridge, NameSubscribeError, LabelsSubscriptionError, "WebSocket Subscription Errors")
-	_ = metricExporter.NewCounter(CategoryBridge, NameResubscribe, LabelsSubscriptions, "WebSocket Resubscriptions")
-	_ = metricExporter.NewCounter(CategoryBridge, NameResubscribeError, LabelsSubscriptionError, "WebSocket Resubscription Errors")
+	_ = metricExporter.NewCounter(categoryBridge, namePanic, labelsRecovered, "Panic Recovered")
+	_ = metricExporter.NewCounter(categoryBridge, nameClientRelay, labelsWSRelay, "WebSocket Client Relays")
+	_ = metricExporter.NewCounter(categoryBridge, nameClientRelayError, labelsWSRelayError, "WebSocket Client Relay Errors")
+	_ = metricExporter.NewCounter(categoryBridge, nameGatewayRelay, labelsWSRelay, "WebSocket Gateway Relays")
+	_ = metricExporter.NewCounter(categoryBridge, nameGatewayRelayError, labelsWSRelayError, "WebSocket Gateway Relay Errors")
+	_ = metricExporter.NewCounter(categoryBridge, nameReconnect, labelsReconnection, "WebSocket Gateway Reconnects")
+	_ = metricExporter.NewCounter(categoryBridge, nameSubscribe, labelsSubscriptions, "WebSocket Subscribe Events")
+	_ = metricExporter.NewCounter(categoryBridge, nameUnsubscribe, labelsSubscriptions, "WebSocket Unsubscribe Events")
+	_ = metricExporter.NewCounter(categoryBridge, nameSubscribeError, labelsSubscriptionError, "WebSocket Subscribe Errors")
+	_ = metricExporter.NewCounter(categoryBridge, nameResubscribe, labelsSubscriptions, "WebSocket Resubscriptions")
+	_ = metricExporter.NewCounter(categoryBridge, nameResubscribeError, labelsSubscriptionError, "WebSocket Resubscription Errors")
 
 	return &MetricExporter{metricExporter}
 }
 
-func (me *MetricExporter) IncPanicRecovered(packageName, err string) {
-	me.Counter(CategoryRouter, NamePanic).IncWithLabels(prometheus.Labels{
-		"package": packageName,
+func (me *MetricExporter) IncPanicRecovered(packagename, err string) {
+	me.Counter(categoryRouter, namePanic).IncWithLabels(prometheus.Labels{
+		"package": packagename,
 		"error":   err,
 	})
 }
@@ -99,41 +96,41 @@ func (me *MetricExporter) IncPanicRecovered(packageName, err string) {
 // Router methods
 
 func (me *MetricExporter) IncHTTPRelayAttempt(chainAlias string) {
-	me.Counter(CategoryRouter, NameHTTPRelay).IncWithLabels(prometheus.Labels{
-		"outcome":     LabelAttempt,
+	me.Counter(categoryRouter, nameHTTPRelay).IncWithLabels(prometheus.Labels{
+		"status":      labelAttempt,
 		"chain_alias": chainAlias,
 	})
 }
 
 func (me *MetricExporter) IncHTTPRelaySuccess(chainAlias string) {
-	me.Counter(CategoryRouter, NameHTTPRelay).IncWithLabels(prometheus.Labels{
-		"outcome":     LabelSuccess,
+	me.Counter(categoryRouter, nameHTTPRelay).IncWithLabels(prometheus.Labels{
+		"status":      labelSuccess,
 		"chain_alias": chainAlias,
 	})
 }
 
 func (me *MetricExporter) IncHTTPRelayError(chainAlias, err string) {
-	me.Counter(CategoryRouter, NameHTTPRelayError).IncWithLabels(prometheus.Labels{
+	me.Counter(categoryRouter, nameHTTPRelayError).IncWithLabels(prometheus.Labels{
 		"error": err,
 	})
 }
 
 func (me *MetricExporter) IncWSRelayAttempt(chainAlias string) {
-	me.Counter(CategoryRouter, NameWSRelay).IncWithLabels(prometheus.Labels{
-		"outcome":     LabelAttempt,
+	me.Counter(categoryRouter, nameWSRelay).IncWithLabels(prometheus.Labels{
+		"status":      labelAttempt,
 		"chain_alias": chainAlias,
 	})
 }
 
 func (me *MetricExporter) IncWSRelaySuccess(chainAlias string) {
-	me.Counter(CategoryRouter, NameWSRelay).IncWithLabels(prometheus.Labels{
-		"outcome":     LabelSuccess,
+	me.Counter(categoryRouter, nameWSRelay).IncWithLabels(prometheus.Labels{
+		"status":      labelSuccess,
 		"chain_alias": chainAlias,
 	})
 }
 
 func (me *MetricExporter) IncWSRelayError(chainAlias, err string) {
-	me.Counter(CategoryRouter, NameWSRelayError).IncWithLabels(prometheus.Labels{
+	me.Counter(categoryRouter, nameWSRelayError).IncWithLabels(prometheus.Labels{
 		"error": err,
 	})
 }
@@ -141,56 +138,76 @@ func (me *MetricExporter) IncWSRelayError(chainAlias, err string) {
 // Bridge methods
 
 func (me *MetricExporter) IncClientRelayAttempt() {
-	me.Counter(CategoryBridge, NameClientRelay).IncWithLabels(prometheus.Labels{
-		"outcome": LabelAttempt,
+	me.Counter(categoryBridge, nameClientRelay).IncWithLabels(prometheus.Labels{
+		"status": labelAttempt,
 	})
 }
 
 func (me *MetricExporter) IncClientRelaySuccess() {
-	me.Counter(CategoryBridge, NameClientRelay).IncWithLabels(prometheus.Labels{
-		"outcome": LabelSuccess,
+	me.Counter(categoryBridge, nameClientRelay).IncWithLabels(prometheus.Labels{
+		"status": labelSuccess,
 	})
 }
 
-func (me *MetricExporter) IncClientRelayError(err string) {
-	me.Counter(CategoryBridge, NameClientRelayError).IncWithLabels(prometheus.Labels{
+func (me *MetricExporter) IncClientRelayError(err string, errType string) {
+	me.Counter(categoryBridge, nameClientRelayError).IncWithLabels(prometheus.Labels{
 		"error": err,
+		"type":  errType,
 	})
 }
 
 func (me *MetricExporter) IncGatewayRelayAttempt() {
-	me.Counter(CategoryBridge, NameGatewayRelay).IncWithLabels(prometheus.Labels{
-		"outcome": LabelAttempt,
+	me.Counter(categoryBridge, nameGatewayRelay).IncWithLabels(prometheus.Labels{
+		"status": labelAttempt,
 	})
 }
 
 func (me *MetricExporter) IncGatewayRelaySuccess() {
-	me.Counter(CategoryBridge, NameGatewayRelay).IncWithLabels(prometheus.Labels{
-		"outcome": LabelSuccess,
+	me.Counter(categoryBridge, nameGatewayRelay).IncWithLabels(prometheus.Labels{
+		"status": labelSuccess,
 	})
 }
 
-func (me *MetricExporter) IncGatewayRelayError(err string) {
-	me.Counter(CategoryBridge, NameGatewayRelayError).IncWithLabels(prometheus.Labels{
+func (me *MetricExporter) IncGatewayRelayError(err string, errType string) {
+	me.Counter(categoryBridge, nameGatewayRelayError).IncWithLabels(prometheus.Labels{
 		"error": err,
+		"type":  errType,
 	})
 }
 
 func (me *MetricExporter) IncResubscribeSuccess(subID string) {
-	me.Counter(CategoryBridge, NameResubscribe).IncWithLabels(prometheus.Labels{
-		"outcome": LabelSuccess,
-		"sub_id":  subID,
+	me.Counter(categoryBridge, nameResubscribe).IncWithLabels(prometheus.Labels{
+		"sub_id": subID,
 	})
 }
 
-func (me *MetricExporter) IncResubscribeError(err string) {
-	me.Counter(CategoryBridge, NameResubscribeError).IncWithLabels(prometheus.Labels{
+func (me *MetricExporter) IncResubscribeError(err string, errType string) {
+	me.Counter(categoryBridge, nameResubscribeError).IncWithLabels(prometheus.Labels{
+		"error": err,
+		"type":  errType,
+	})
+}
+
+func (me *MetricExporter) IncSubscribe(subID string) {
+	me.Counter(categoryBridge, nameSubscribe).IncWithLabels(prometheus.Labels{
+		"sub_id": subID,
+	})
+}
+
+func (me *MetricExporter) IncUnsubscribe(subID string) {
+	me.Counter(categoryBridge, nameUnsubscribe).IncWithLabels(prometheus.Labels{
+		"sub_id": subID,
+	})
+}
+
+func (me *MetricExporter) IncSubscribeError(err string) {
+	me.Counter(categoryBridge, nameSubscribeError).IncWithLabels(prometheus.Labels{
 		"error": err,
 	})
 }
 
-func (me *MetricExporter) AddSubscribe(val float64) {
-	me.Gauge(CategoryBridge, NameSubscribe).AddWithLabels(prometheus.Labels{
-		"outcome": LabelActiveSubscriptions,
-	}, val)
+func (me *MetricExporter) IncReconnect() {
+	me.Counter(categoryBridge, nameReconnect).IncWithLabels(prometheus.Labels{
+		"status": labelSuccess,
+	})
 }
