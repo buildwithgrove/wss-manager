@@ -132,7 +132,7 @@ func newAPIRouter(config Config) *wsRouter {
 func (wr *wsRouter) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	var gatewayHealthCheckJSON health.HealthCheckJSON
 
-	resp, err := http.Get(wr.gatewayURLFunc("https", "mainnet", "/healthz"))
+	resp, err := http.Get(wr.gatewayURLFunc("http", "mainnet", "/healthz"))
 	if err != nil {
 		gatewayHealthCheckJSON = health.HealthCheckJSON{Status: "request error"}
 	} else {
@@ -193,7 +193,7 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	gatewayURL, err := url.Parse(wr.gatewayURLFunc("http", chain, req.URL.Path))
 	if err != nil {
 		wr.logger.Error("error parsing gateway URL", slog.String("error", err.Error()))
-		wr.metrics.IncHTTPRelayError(string(chain), err.Error())
+		wr.metrics.IncHTTPRelayError(string(chain), err.Error(), metrics.LabelErrorParse)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
@@ -205,6 +205,7 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
 		if err != nil {
 			wr.logger.Error("proxy error", slog.String("error", err.Error()))
+			wr.metrics.IncHTTPRelayError(string(chain), err.Error(), metrics.LabelErrorProxy)
 			http.Error(rw, "Service Unavailable", http.StatusServiceUnavailable)
 		}
 	}
@@ -228,7 +229,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	if err != nil {
 		errString := fmt.Sprintf("error upgrading connection: %s", err.Error())
 		wr.logger.Error(errString)
-		wr.metrics.IncWSRelayError(string(chain), err.Error())
+		wr.metrics.IncWSRelayError(string(chain), err.Error(), metrics.LabelErrorUpgrade)
 		wr.writeHandshakeErrorResponse(w, http.StatusBadRequest, errString)
 		return
 	}
@@ -250,7 +251,7 @@ func (wr *wsRouter) websocketHandler(w http.ResponseWriter, req *http.Request, c
 	})
 	if err != nil {
 		wr.logger.Error(fmt.Sprintf("error creating bridge: %s", err.Error()))
-		wr.metrics.IncWSRelayError(string(chain), err.Error())
+		wr.metrics.IncWSRelayError(string(chain), err.Error(), metrics.LabelErrorBridge)
 
 		// if gateway connection fails, close the connection with the client and send the reason for the closure
 		closeMsg := websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error())

@@ -38,6 +38,10 @@ const (
 	LabelErrorRead    = "read_error"
 	LabelErrorMarshal = "marshal_error"
 	LabelErrorProcess = "process_error"
+	LabelErrorParse   = "parse_error"
+	LabelErrorProxy   = "proxy_error"
+	LabelErrorBridge  = "bridge_error"
+	LabelErrorUpgrade = "upgrade_error"
 )
 
 var (
@@ -45,7 +49,7 @@ var (
 
 	// Router labels
 	labelsRelay      = []string{"status", "chain_alias"}
-	labelsRelayError = []string{"error"}
+	labelsRelayError = []string{"error", "type"}
 
 	// Bridge labels
 	labelsWSRelay           = []string{"status"}
@@ -109,9 +113,10 @@ func (me *MetricExporter) IncHTTPRelaySuccess(chainAlias string) {
 	})
 }
 
-func (me *MetricExporter) IncHTTPRelayError(chainAlias, err string) {
+func (me *MetricExporter) IncHTTPRelayError(chainAlias, err, errType string) {
 	me.Counter(categoryRouter, nameHTTPRelayError).IncWithLabels(prometheus.Labels{
 		"error": err,
+		"type":  errType,
 	})
 }
 
@@ -129,9 +134,10 @@ func (me *MetricExporter) IncWSRelaySuccess(chainAlias string) {
 	})
 }
 
-func (me *MetricExporter) IncWSRelayError(chainAlias, err string) {
+func (me *MetricExporter) IncWSRelayError(chainAlias, err, errType string) {
 	me.Counter(categoryRouter, nameWSRelayError).IncWithLabels(prometheus.Labels{
 		"error": err,
+		"type":  errType,
 	})
 }
 
