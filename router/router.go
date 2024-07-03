@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -20,15 +21,27 @@ import (
 	"github.com/pokt-foundation/wss-manager/metrics"
 )
 
+var defaultProxyTransport = &http.Transport{
+	MaxConnsPerHost:     100,
+	MaxIdleConnsPerHost: 100,
+	MaxIdleConns:        10_000,
+	IdleConnTimeout:     90 * time.Second,
+	DialContext: (&net.Dialer{
+		Timeout:   3 * time.Second,
+		KeepAlive: 30 * time.Second,
+		DualStack: true,
+	}).DialContext,
+}
+
 type (
 	wsRouter struct {
 		mux                     *http.ServeMux
 		metrics                 *metrics.MetricExporter
-		logger                  *logger.Logger
 		gatewayURLFunc          GatewayURLFunc
 		maxReconnectionAttempts int
 		imageTag                string
 		tls                     bool
+		logger                  *logger.Logger
 	}
 
 	Config struct {
@@ -187,7 +200,17 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 
 	wr.metrics.IncHTTPRelaySuccess(string(chain))
 
-	httputil.NewSingleHostReverseProxy(gatewayURL).ServeHTTP(w, req)
+	proxy := httputil.NewSingleHostReverseProxy(gatewayURL)
+	proxy.Transport = defaultProxyTransport
+	proxy.ErrorHandler = func(rw http.ResponseWriter, req *http.Request, err error) {
+		if err != nil {
+			wr.logger.Error("proxy error", slog.String("error", err.Error()))
+			http.Error(rw, "Service Unavailable", http.StatusServiceUnavailable)
+		}
+	}
+
+	wr.metrics.IncHTTPRelaySuccess(string(chain))
+	proxy.ServeHTTP(w, req)
 }
 
 // websocketHandler handles WebSocket connections by upgrading the connection to a WebSocket connection and creating a bridge
