@@ -216,6 +216,39 @@ func Test_handleHealthz(t *testing.T) {
 	}
 }
 
+func Test_handleMetrics(t *testing.T) {
+	test := struct {
+		name       string
+		wantStatus int
+	}{
+		name:       "should return metrics data",
+		wantStatus: http.StatusOK,
+	}
+
+	t.Run(test.name, func(t *testing.T) {
+		c := require.New(t)
+
+		config := Config{
+			Logger:         logger.New(),
+			MetricExporter: &metrics.MetricExporter{MetricExporter: exporterMocks.Exporter{}},
+		}
+		router := newAPIRouter(config)
+
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		w := httptest.NewRecorder()
+
+		router.mux.ServeHTTP(w, req)
+
+		resp := w.Result()
+		body, err := io.ReadAll(resp.Body)
+		c.NoError(err)
+		resp.Body.Close()
+
+		c.Equal(test.wantStatus, resp.StatusCode)
+		c.NotEmpty(body)
+	})
+}
+
 func Test_requestHandler(t *testing.T) {
 	tests := []struct {
 		name          string
