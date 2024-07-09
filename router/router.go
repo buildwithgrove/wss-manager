@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/pokt-foundation/portal-http-db/v2/types"
 	"github.com/pokt-foundation/portal-middleware/health"
@@ -123,6 +124,9 @@ func newAPIRouter(config Config) *wsRouter {
 	// `wss` requests are upgraded to a WebSocket connection
 	// `https` requests are proxied to the Gateway
 	wr.mux.HandleFunc("/v1/{app}", corsMiddleware(wr.requestHandler))
+
+	// GET /metrics - handleMetrics provides metrics for prometheus
+	wr.mux.Handle("GET /metrics", promhttp.Handler())
 
 	return wr
 }
