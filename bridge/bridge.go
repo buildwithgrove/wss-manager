@@ -100,6 +100,10 @@ func NewBridge(config Config) (*Bridge, error) {
 // Run starts the bridge and establishes a bidirectional communication between the client and server
 func (b *Bridge) Run() {
 	defer func() {
+		// When bridge is closed, remove all subscriptions from the metrics gauge
+		b.metrics.AddSubscribe(float64(-len(b.subscriptions)))
+
+		// handle recover to avoid panic
 		if r := recover(); r != nil {
 			b.metrics.IncPanicRecovered("bridge", fmt.Sprintf("%v", r))
 			b.log.Error(fmt.Sprintf("bridge panicked: %v", r))
@@ -248,7 +252,7 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		b.subscriptions[subscription.ID] = subscription
 		b.mu.Unlock()
 
-		b.metrics.IncSubscribe(string(subscription.ID))
+		b.metrics.AddSubscribe(1)
 
 	// If response is a unsubscription confirmation remove the subscription from the subscriptions map
 	case websockets.SubTypeUnsubscribe:
@@ -258,7 +262,7 @@ func (b *Bridge) handleSubscribeEvent(gatewayMsg websockets.GatewayMessage) erro
 		delete(b.subscriptions, *unsubID)
 		b.mu.Unlock()
 
-		b.metrics.IncUnsubscribe(string(*unsubID))
+		b.metrics.AddSubscribe(-1)
 	}
 
 	return nil
@@ -305,5 +309,4 @@ func (b *Bridge) resumeSubscriptions() {
 		b.log.Info("resumed subscription", slog.String("subscription", string(sub.ID)))
 		b.metrics.IncResubscribeSuccess(string(sub.ID))
 	}
-
 }

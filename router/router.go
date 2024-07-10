@@ -125,7 +125,7 @@ func newAPIRouter(config Config) *wsRouter {
 	// `https` requests are proxied to the Gateway
 	wr.mux.HandleFunc("/v1/{app}", corsMiddleware(wr.requestHandler))
 
-	// GET /metrics - handleMetrics provides metrics for prometheus
+	// GET /metrics - handleMetrics provides
 	wr.mux.Handle("GET /metrics", promhttp.Handler())
 
 	return wr
@@ -201,8 +201,6 @@ func (wr *wsRouter) httpHandler(w http.ResponseWriter, req *http.Request, chain 
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-
-	wr.metrics.IncHTTPRelaySuccess(string(chain))
 
 	proxy := httputil.NewSingleHostReverseProxy(gatewayURL)
 	proxy.Transport = defaultProxyTransport

@@ -28,8 +28,7 @@ const (
 	nameGatewayRelay      = "gateway_relay"
 	nameGatewayRelayError = "gateway_relay_error"
 	nameReconnect         = "reconnect"
-	nameSubscribe         = "subscribe"
-	nameUnsubscribe       = "unsubscribe"
+	nameSubscriptions     = "subscriptions"
 	nameSubscribeError    = "subscribe_error"
 	nameResubscribe       = "resubscribe"
 	nameResubscribeError  = "resubscribe_error"
@@ -55,6 +54,7 @@ var (
 	labelsWSRelay           = []string{"status"}
 	labelsWSRelayError      = []string{"error", "type"}
 	labelsReconnection      = []string{"status"}
+	labelsSubscribe         = []string{"subscriptions"}
 	labelsSubscriptions     = []string{"sub_id"}
 	labelsSubscriptionError = []string{"error"}
 )
@@ -81,8 +81,7 @@ func NewMetricExporter(namespace string) *MetricExporter {
 	_ = metricExporter.NewCounter(categoryBridge, nameGatewayRelay, labelsWSRelay, "WebSocket Gateway Relays")
 	_ = metricExporter.NewCounter(categoryBridge, nameGatewayRelayError, labelsWSRelayError, "WebSocket Gateway Relay Errors")
 	_ = metricExporter.NewCounter(categoryBridge, nameReconnect, labelsReconnection, "WebSocket Gateway Reconnects")
-	_ = metricExporter.NewCounter(categoryBridge, nameSubscribe, labelsSubscriptions, "WebSocket Subscribe Events")
-	_ = metricExporter.NewCounter(categoryBridge, nameUnsubscribe, labelsSubscriptions, "WebSocket Unsubscribe Events")
+	_ = metricExporter.NewGauge(categoryBridge, nameSubscriptions, labelsSubscribe, "WebSocket Subscribe Events")
 	_ = metricExporter.NewCounter(categoryBridge, nameSubscribeError, labelsSubscriptionError, "WebSocket Subscribe Errors")
 	_ = metricExporter.NewCounter(categoryBridge, nameResubscribe, labelsSubscriptions, "WebSocket Resubscriptions")
 	_ = metricExporter.NewCounter(categoryBridge, nameResubscribeError, labelsSubscriptionError, "WebSocket Resubscription Errors")
@@ -194,16 +193,8 @@ func (me *MetricExporter) IncResubscribeError(err string, errType string) {
 	})
 }
 
-func (me *MetricExporter) IncSubscribe(subID string) {
-	me.Counter(categoryBridge, nameSubscribe).IncWithLabels(prometheus.Labels{
-		"sub_id": subID,
-	})
-}
-
-func (me *MetricExporter) IncUnsubscribe(subID string) {
-	me.Counter(categoryBridge, nameUnsubscribe).IncWithLabels(prometheus.Labels{
-		"sub_id": subID,
-	})
+func (me *MetricExporter) AddSubscribe(amount float64) {
+	me.Gauge(categoryBridge, nameSubscriptions).Add(labelSuccess, amount)
 }
 
 func (me *MetricExporter) IncSubscribeError(err string) {
