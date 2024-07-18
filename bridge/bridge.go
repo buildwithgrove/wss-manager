@@ -163,7 +163,7 @@ func (b *Bridge) handleClientMessage(msg websockets.Message) {
 	if err != nil {
 		errMsg := fmt.Sprintf("error writing to gateway websocket: %s", err.Error())
 		b.log.Error(errMsg)
-		b.metrics.IncClientRelayError(errMsg, metrics.LabelErrorWrite)
+		b.metrics.IncGatewayRelayError(errMsg, metrics.LabelErrorWrite)
 		if err := b.clientConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to client websocket", slog.String("error", err.Error()))
 		}
@@ -201,7 +201,7 @@ func (b *Bridge) handleGatewayMessage(msg websockets.Message) {
 	if err != nil {
 		errMsg := fmt.Sprintf("error writing to client websocket: %s", err.Error())
 		b.log.Error(errMsg)
-		b.metrics.IncGatewayRelayError(errMsg, metrics.LabelErrorWrite)
+		b.metrics.IncClientRelayError(errMsg, metrics.LabelErrorWrite)
 		if err := b.gatewayConn.WriteMessage(websocket.TextMessage, []byte(errMsg)); err != nil {
 			b.log.Error("error writing error message to gateway websocket", slog.String("error", err.Error()))
 		}
